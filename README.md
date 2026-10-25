@@ -34,3 +34,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$L" -tags $
 - Linux: `flutter build linux --release`, then pack `bundle/` with `packaging/install-linux.sh`
   (tar, not AppImage: the core gets CAP_NET_ADMIN with setcap on first connect).
 - Windows: `flutter build windows --release` on Windows (the app requires admin: TUN / wintun).
+
+## License
+
+GPL-3.0 (see `LICENSE`), as required by the bundled sing-box core.
