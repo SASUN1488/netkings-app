@@ -1,0 +1,121 @@
+# Desktop builds: sing-box core + Flutter app for Windows and Linux.
+# Push a tag vX.Y.Z -> files are attached to that GitHub release; "Run workflow" -> artifacts only (for testing).
+# Android is built locally (release signing key is not stored on GitHub).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.47.8"
+  SING_BOX_VERSION: "1.14.4"
+  SING_BOX_TAGS: with_gvisor,with_quic,with_utls,with_clash_api
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box
+          ref: v${{ env.SING_BOX_VERSION }}
+          path: sing-box
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sing-box/go.mod
+          cache-dependency-path: sing-box/go.sum
+      - name: Build sing-box (linux, windows)
+        working-directory: sing-box
+        run: |
+          L="-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=$SING_BOX_VERSION"
+          CGO_ENABLED=0 go build -trimpath -ldflags "$L" -tags "$SING_BOX_TAGS" -o ../out/linux/sing-box ./cmd/sing-box
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$L" -tags "$SING_BOX_TAGS" -o ../out/windows/sing-box.exe ./cmd/sing-box
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core
+          path: out/
+
+  windows:
+    needs: core
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: core
+          path: core
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        run: flutter build windows --release
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = ((Select-String -Path pubspec.yaml -Pattern '^version:\s*([^+\s]+)').Matches[0].Groups[1].Value)
+          New-Item -ItemType Directory dist/NetKings | Out-Null
+          Copy-Item -Recurse build/windows/x64/runner/Release/* dist/NetKings/
+          if (-not (Test-Path dist/NetKings/core/sing-box.exe)) { throw "core missing in bundle" }
+          Compress-Archive -Path dist/NetKings -DestinationPath "dist/NetKings-$v-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  linux:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: core
+          path: core
+      - name: Desktop build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        run: |
+          chmod +x core/linux/sing-box
+          flutter build linux --release
+      - name: Package
+        run: |
+          v=$(sed -nE 's/^version:\s*([^+ ]+).*/\1/p' pubspec.yaml)
+          mkdir -p dist/netkings-linux
+          cp -a build/linux/x64/release/bundle dist/netkings-linux/
+          test -x dist/netkings-linux/bundle/lib/core/sing-box
+          cp packaging/install-linux.sh packaging/netkings.png dist/netkings-linux/
+          tar -C dist -czf "dist/NetKings-$v-linux-x64.tar.gz" netkings-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{windows,linux}"
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --title "NetKings ${tag#v}" --notes "Desktop builds by GitHub Actions."
+          gh release upload "$tag" dist/* -R "$GITHUB_REPOSITORY" --clobber
