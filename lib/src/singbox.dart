@@ -1,23 +1,32 @@
 import 'dart:convert';
 
+import 'settings.dart';
 import 'subscription.dart';
 
 /// Russian domains go direct (as on the servers): faster, and they pass the mobile operators' whitelists anyway.
 const _directSuffixes = ['.ru', '.su', '.xn--p1ai'];
 
+/// The core's clash API on localhost: traffic / ping / which server is in use, and forced re-tests.
+const clashPort = 29190;
+
+/// Leaf outbound tag `exit-entry-protocol` (e.g. "fi-relay3-grpc") -> protocol label.
+String protocolOf(String tag) => tag.split('-').last;
+
 /// Full sing-box config for the core: the subscription's outbounds + a selector on the picked country,
 /// TUN inbound (Android VpnService / desktop TUN), DNS over the tunnel.
-String buildConfig(Subscription sub, String selected) {
+String buildConfig(Subscription sub, String selected, [Settings? settings, String secret = '']) {
+  final s = settings ?? Settings();
   final groups = ['auto', ...sub.countries.map((c) => c.tag)];
+  final dns = dnsServers[s.dns]!.$2;
   final config = {
     'log': {'level': 'warn', 'timestamp': true},
     'dns': {
       'servers': [
-        {'type': 'https', 'tag': 'remote', 'server': '1.1.1.1', 'detour': 'proxy'},
+        {'type': 'https', 'tag': 'remote', 'server': dns, 'detour': 'proxy'},
         {'type': 'udp', 'tag': 'direct', 'server': '77.88.8.8'},
       ],
       'rules': [
-        {'domain_suffix': _directSuffixes, 'server': 'direct'},
+        if (s.directRu) {'domain_suffix': _directSuffixes, 'server': 'direct'},
       ],
       'final': 'remote',
       'strategy': 'ipv4_only',
@@ -34,7 +43,7 @@ String buildConfig(Subscription sub, String selected) {
       },
     ],
     'outbounds': [
-      ...sub.outbounds,
+      ..._outbounds(sub, s.protocol),
       {'type': 'selector', 'tag': 'proxy', 'outbounds': groups, 'default': groups.contains(selected) ? selected : 'auto'},
       {'type': 'direct', 'tag': 'direct'},
     ],
@@ -43,7 +52,7 @@ String buildConfig(Subscription sub, String selected) {
         {'action': 'sniff'},
         {'protocol': 'dns', 'action': 'hijack-dns'},
         {'ip_is_private': true, 'outbound': 'direct'},
-        {'domain_suffix': _directSuffixes, 'outbound': 'direct'},
+        if (s.directRu) {'domain_suffix': _directSuffixes, 'outbound': 'direct'},
       ],
       'final': 'proxy',
       'auto_detect_interface': true,
@@ -51,7 +60,26 @@ String buildConfig(Subscription sub, String selected) {
     },
     'experimental': {
       'cache_file': {'enabled': true},
+      'clash_api': {'external_controller': '127.0.0.1:$clashPort', 'secret': secret},
     },
   };
   return jsonEncode(config);
+}
+
+/// The subscription's outbounds; with a fixed protocol the urltest groups keep only that protocol's servers
+/// (a country without it keeps all of them). Every group drops the connections of a server it leaves, so
+/// apps reconnect through the new one at once.
+List<Map<String, dynamic>> _outbounds(Subscription sub, String protocol) {
+  final out = <Map<String, dynamic>>[];
+  for (final o in sub.outbounds) {
+    final m = Map<String, dynamic>.from(o as Map);
+    if (m['type'] == 'urltest') {
+      final all = List<String>.from(m['outbounds'] as List);
+      final only = protocol == 'auto' ? all : all.where((t) => protocolOf(t) == protocol).toList();
+      m['outbounds'] = only.isEmpty ? all : only;
+      m['interrupt_exist_connections'] = true;
+    }
+    out.add(m);
+  }
+  return out;
 }

@@ -80,4 +80,5 @@ flutter {
 dependencies {
     // sing-box core (gomobile bind of experimental/libbox, see ~/dev/libbox)
     implementation(files("libs/libbox.aar"))
+    implementation("androidx.core:core-ktx:1.13.1")
 }

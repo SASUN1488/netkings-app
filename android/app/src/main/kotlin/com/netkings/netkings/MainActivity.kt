@@ -5,6 +5,9 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -51,7 +54,20 @@ class MainActivity : FlutterActivity() {
                     result.success(initialLink)
                     initialLink = null
                 }
-                "device" -> result.success(mapOf("model" to "${Build.MANUFACTURER} ${Build.MODEL}", "os" to "Android ${Build.VERSION.RELEASE}"))
+                "device" -> result.success(mapOf("model" to "${Build.MANUFACTURER} ${Build.MODEL}", "os" to "Android ${Build.VERSION.RELEASE}",
+                    "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: "")))
+                // update downloaded by the Flutter side: the system installer takes it from here
+                "installApk" -> {
+                    val uri = FileProvider.getUriForFile(this, "$packageName.files", File(call.argument<String>("path")!!))
+                    startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+                    result.success(true)
+                }
+                // "always-on VPN" / "block connections without VPN" (kill switch) live in the system settings
+                "vpnSettings" -> {
+                    startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }

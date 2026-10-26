@@ -46,6 +46,11 @@ class Vpn extends ChangeNotifier {
   static Future<String?> initialLink() async =>
       Platform.isAndroid ? _method.invokeMethod<String>('initialLink') : null;
 
+  /// Android "always-on VPN" / "block connections without VPN" page
+  static Future<void> openSystemSettings() async {
+    if (Platform.isAndroid) await _method.invokeMethod('vpnSettings');
+  }
+
   static void onLink(void Function(String) handler) {
     if (!Platform.isAndroid) return;
     _method.setMethodCallHandler((call) async {

@@ -1,20 +1,25 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'src/monitor.dart';
+import 'src/settings.dart';
 import 'src/singbox.dart';
 import 'src/subscription.dart';
+import 'src/update.dart';
 import 'src/vpn.dart';
 
-const _bg = Color(0xFF0E1014);
-const _surface = Color(0xFF181B22);
-const _line = Color(0xFF262A33);
-const _gold = Color(0xFFF2B33D);
-const _green = Color(0xFF3FCF8E);
-const _muted = Color(0xFF8B93A3);
+const _bg = Color(0xFF0B0A10);
+const _surface = Color(0xFF15131D);
+const _line = Color(0xFF272335);
+const _purple = Color(0xFF9D6BFF);
+const _green = Color(0xFF2EE59D);
+const _muted = Color(0xFF8E8AA0);
 const _red = Color(0xFFF0616D);
+const _brand = LinearGradient(colors: [_green, _purple], begin: Alignment.topLeft, end: Alignment.bottomRight);
 const _shopBot = 'https://t.me/NetKingsvpn_bot';
 
 void main() => runApp(const NetKingsApp());
@@ -29,7 +34,13 @@ class NetKingsApp extends StatelessWidget {
         theme: ThemeData(
           brightness: Brightness.dark,
           scaffoldBackgroundColor: _bg,
-          colorScheme: const ColorScheme.dark(primary: _gold, surface: _surface, error: _red),
+          colorScheme: const ColorScheme.dark(primary: _purple, secondary: _green, surface: _surface, error: _red),
+          switchTheme: SwitchThemeData(
+            thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.white : _muted),
+            trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _purple : _line),
+          ),
+          radioTheme: RadioThemeData(fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _green : _muted)),
+          snackBarTheme: const SnackBarThemeData(backgroundColor: _surface, contentTextStyle: TextStyle(color: Colors.white)),
           fontFamily: 'Roboto',
           useMaterial3: true,
         ),
@@ -46,11 +57,18 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> with WidgetsBindingObserver {
   final vpn = Vpn();
+  final _secret = List.generate(24, (_) => Random.secure().nextInt(36).toRadixString(36)).join();
   Subscription? sub;
+  Settings settings = Settings();
+  Monitor? monitor;
+  Update? update;
+  double? updateProgress;
   String country = 'auto';
   bool loading = true, refreshing = false;
+  // the watchdog gave up on the picked protocol / country: "auto" until the user connects again
+  bool _protoFallback = false, _countryFallback = false;
   String? message;
-  DateTime? _lastFetch;
+  DateTime? _lastFetch, _lastUpdateCheck;
 
   @override
   void initState() {
@@ -63,28 +81,92 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
   Future<void> _init() async {
     country = await Store.read('country') ?? 'auto';
+    settings = await Settings.load();
     sub = await cachedSubscription();
     final link = await Vpn.initialLink();
     setState(() => loading = false);
+    unawaited(_checkUpdate());
     if (link != null) {
       await _importLink(link);
     } else if (sub != null) {
       unawaited(_refresh(silent: true));
+      if (settings.autoConnect && vpn.state == VpnState.stopped) unawaited(_toggle());
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s != AppLifecycleState.resumed) return;
     // the bot may have extended the subscription meanwhile; at most once per 10 min
-    if (s == AppLifecycleState.resumed && sub != null &&
-        (_lastFetch == null || DateTime.now().difference(_lastFetch!) > const Duration(minutes: 10))) {
+    if (sub != null && (_lastFetch == null || DateTime.now().difference(_lastFetch!) > const Duration(minutes: 10))) {
       _refresh(silent: true);
+    }
+    if (_lastUpdateCheck == null || DateTime.now().difference(_lastUpdateCheck!) > const Duration(hours: 6)) {
+      _checkUpdate();
+    }
+  }
+
+  Future<void> _checkUpdate() async {
+    _lastUpdateCheck = DateTime.now();
+    final u = await checkUpdate();
+    if (mounted) setState(() => update = u);
+  }
+
+  Future<void> _install() async {
+    final u = update;
+    if (u == null) return;
+    if (!Platform.isAndroid) {
+      _open(u.url);         // desktop: the browser downloads the new archive
+      return;
+    }
+    setState(() => updateProgress = 0);
+    try {
+      await installAndroid(u, (p) => setState(() => updateProgress = p));
+    } catch (e) {
+      setState(() => message = 'Не удалось скачать обновление: $e');
+    } finally {
+      if (mounted) setState(() => updateProgress = null);
     }
   }
 
   void _onVpn() {
     if (vpn.error != null && vpn.state == VpnState.stopped) message = 'Не удалось подключиться: ${vpn.error}';
+    if (vpn.state == VpnState.started && monitor == null) {
+      monitor = Monitor(_secret, autoSwitch: settings.autoSwitch, onSwitch: _onSwitch, onDead: _onDead)
+        ..addListener(() => setState(() {}))
+        ..start();
+    } else if (vpn.state == VpnState.stopped && monitor != null) {
+      monitor!.dispose();
+      monitor = null;
+    }
     setState(() {});
+  }
+
+  void _toast(String text) =>
+      ScaffoldMessenger.of(context)..hideCurrentSnackBar()..showSnackBar(SnackBar(content: Text(text)));
+
+  void _onSwitch(String leaf) {
+    if (mounted) _toast('Переключился: ${_leafLabel(leaf)}');
+  }
+
+  /// Nothing in the picked group answers even after a re-test: widen to every protocol, then every country.
+  Future<void> _onDead() async {
+    if (!settings.autoSwitch) return;
+    if ((settings.protocol != 'auto') && !_protoFallback) {
+      _protoFallback = true;
+      _toast('${protocols[settings.protocol]} не отвечает — пробую все протоколы');
+      await _restart();
+    } else if (country != 'auto' && !_countryFallback) {
+      _countryFallback = true;
+      _toast('Серверы страны не отвечают — переключаюсь на самый быстрый');
+      await _restart();
+    }
+  }
+
+  String _config() {
+    final s = settings.copy();
+    if (_protoFallback) s.protocol = 'auto';
+    return buildConfig(sub!, _countryFallback ? 'auto' : country, s, _secret);
   }
 
   Future<void> _importLink(String text) async {
@@ -129,13 +211,14 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       setState(() => message = s.notice ?? 'Подписка не активна');
       return;
     }
+    _protoFallback = _countryFallback = false;
     setState(() => message = null);
-    if (!await vpn.start(buildConfig(s, country))) {
+    if (!await vpn.start(_config())) {
       setState(() => message = vpn.error ?? 'Нужно разрешить VPN-подключение');
     }
   }
 
-  /// new country / new servers while connected: stop, wait for it, start again
+  /// new country / new servers / new settings while connected: stop, wait for it, start again
   Future<void> _restart() async {
     if (vpn.state != VpnState.started) return;
     final stopped = Completer<void>();
@@ -147,14 +230,41 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     await vpn.stop();
     await stopped.future.timeout(const Duration(seconds: 10), onTimeout: () {});
     vpn.removeListener(l);
-    await vpn.start(buildConfig(sub!, country));
+    await vpn.start(_config());
   }
 
   Future<void> _pickCountry(String tag) async {
-    if (tag == country) return;
+    if (tag == country && !_countryFallback) return;
+    _countryFallback = false;
     setState(() => country = tag);
     await Store.write('country', tag);
     await _restart();
+  }
+
+  Future<void> _openSettings() async {
+    final before = settings.copy();
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => SettingsPage(
+        settings: settings,
+        update: update,
+        onCheckUpdate: () async {
+          await _checkUpdate();
+          return update;
+        },
+        onInstall: _install,
+      ),
+    ));
+    await settings.save();
+    if (!settings.sameCore(before)) {
+      _protoFallback = false;
+      await _restart();
+    } else if (settings.autoSwitch != before.autoSwitch && monitor != null) {
+      // the watchdog reads the flag at start: renew it
+      monitor!.dispose();
+      monitor = null;
+      _onVpn();
+    }
+    setState(() {});
   }
 
   Future<void> _logout() async {
@@ -170,6 +280,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     vpn.removeListener(_onVpn);
+    monitor?.dispose();
     vpn.dispose();
     super.dispose();
   }
@@ -198,12 +309,15 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     };
     return RefreshIndicator(
       onRefresh: _refresh,
-      color: _gold,
+      color: _purple,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
           Row(children: [
-            const Icon(Icons.workspace_premium_rounded, color: _gold, size: 28),
+            ShaderMask(
+              shaderCallback: (r) => _brand.createShader(r),
+              child: const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 28),
+            ),
             const SizedBox(width: 8),
             const Text('NetKings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: .3)),
             const Spacer(),
@@ -214,6 +328,11 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.refresh_rounded, color: _muted),
             ),
+            IconButton(
+              tooltip: 'Настройки',
+              onPressed: _openSettings,
+              icon: const Icon(Icons.tune_rounded, color: _muted),
+            ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, color: _muted),
               color: _surface,
@@ -221,7 +340,11 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
               itemBuilder: (_) => const [PopupMenuItem(value: 'logout', child: Text('Другая подписка'))],
             ),
           ]),
-          const SizedBox(height: 36),
+          if (update != null) ...[
+            const SizedBox(height: 12),
+            _UpdateCard(update: update!, progress: updateProgress, onInstall: _install),
+          ],
+          const SizedBox(height: 32),
           Center(child: _PowerButton(on: on, busy: busy, onTap: busy ? null : _toggle)),
           const SizedBox(height: 20),
           Center(
@@ -230,10 +353,12 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 6),
           Center(
-            child: Text(on ? _countryLabel(s) : 'Нажми, чтобы подключиться',
-                style: const TextStyle(color: _muted, fontSize: 14)),
+            child: Text(on ? _onLabel(s) : 'Нажми, чтобы подключиться',
+                textAlign: TextAlign.center, style: const TextStyle(color: _muted, fontSize: 14)),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 16),
+          _StatsBar(monitor: on ? monitor : null),
+          const SizedBox(height: 24),
           const Text('СТРАНА', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
           const SizedBox(height: 10),
           Wrap(spacing: 8, runSpacing: 8, children: [
@@ -255,11 +380,108 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   /// Windows fonts have no flag emoji (they come out as "FI"): names only there
   static String _flag(Country c) => Platform.isWindows || c.flag.isEmpty ? '' : '${c.flag} ';
 
-  String _countryLabel(Subscription s) {
-    if (country == 'auto') return 'Самый быстрый сервер';
+  /// "fi-relay3-grpc" -> "🇫🇮 Финляндия · VLESS gRPC · вход 2"
+  String _leafLabel(String leaf) {
+    final s = sub;
+    final parts = leaf.split('-');
+    if (s == null || parts.length < 3) return leaf;
+    final c = s.countries.where((c) => c.id == parts.first);
+    final entries = <String>[];
+    for (final o in s.outbounds) {
+      final p = '${o['tag']}'.split('-');
+      if (p.length >= 3 && o['type'] != 'urltest') {
+        final e = p.sublist(1, p.length - 1).join('-');
+        if (!entries.contains(e)) entries.add(e);
+      }
+    }
+    final entry = parts.sublist(1, parts.length - 1).join('-');
+    final proto = protocols[protocolOf(leaf)] ?? protocolOf(leaf);
+    return [
+      if (c.isNotEmpty) _flag(c.first) + c.first.name,
+      proto,
+      if (entries.length > 1) 'вход ${entries.indexOf(entry) + 1}',
+    ].join(' · ');
+  }
+
+  String _onLabel(Subscription s) {
+    final leaf = monitor?.leaf;
+    if (leaf != null && leaf.split('-').length >= 3) return _leafLabel(leaf);
+    if (country == 'auto' || _countryFallback) return 'Самый быстрый сервер';
     final c = s.countries.where((c) => c.tag == country);
     return c.isEmpty ? 'Самый быстрый сервер' : _flag(c.first) + c.first.name;
   }
+}
+
+class _StatsBar extends StatelessWidget {
+  final Monitor? monitor;
+  const _StatsBar({this.monitor});
+
+  @override
+  Widget build(BuildContext context) {
+    final m = monitor;
+    final ping = m?.ping;
+    Widget cell(IconData icon, String label, String value, Color color) => Expanded(
+          child: Column(children: [
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
+            ]),
+            const SizedBox(height: 4),
+            Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: m == null ? _muted : Colors.white)),
+          ]),
+        );
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(color: _surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: _line)),
+      child: Row(children: [
+        cell(Icons.south_rounded, 'Загрузка', m == null ? '—' : formatSpeed(m.down), _green),
+        Container(width: 1, height: 32, color: _line),
+        cell(Icons.north_rounded, 'Отдача', m == null ? '—' : formatSpeed(m.up), _purple),
+        Container(width: 1, height: 32, color: _line),
+        cell(Icons.network_ping_rounded, 'Пинг', m == null ? '—' : (ping == null ? '…' : '$ping мс'),
+            ping == null ? _muted : (ping < 400 ? _green : (ping < 1000 ? _purple : _red))),
+      ]),
+    );
+  }
+}
+
+class _UpdateCard extends StatelessWidget {
+  final Update update;
+  final double? progress;
+  final VoidCallback onInstall;
+  const _UpdateCard({required this.update, required this.progress, required this.onInstall});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _purple.withValues(alpha: .6)),
+          color: _purple.withValues(alpha: .10),
+        ),
+        child: Row(children: [
+          const Icon(Icons.system_update_rounded, color: _green),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Доступна версия ${update.version}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              progress == null
+                  ? Text('У тебя $appVersion', style: const TextStyle(color: _muted, fontSize: 13))
+                  : Padding(
+                      padding: const EdgeInsets.only(top: 6, right: 8),
+                      child: LinearProgressIndicator(value: progress, color: _green, backgroundColor: _line),
+                    ),
+            ]),
+          ),
+          FilledButton(
+            onPressed: progress == null ? onInstall : null,
+            style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white),
+            child: const Text('Обновить'),
+          ),
+        ]),
+      );
 }
 
 class _PowerButton extends StatelessWidget {
@@ -269,23 +491,32 @@ class _PowerButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = on ? _green : _gold;
+    final glow = on ? _green : _purple;
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
         width: 184,
         height: 184,
+        padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: _surface,
-          border: Border.all(color: color.withValues(alpha: on ? 1 : .55), width: 3),
-          boxShadow: [BoxShadow(color: color.withValues(alpha: on ? .35 : .12), blurRadius: on ? 48 : 24, spreadRadius: 2)],
+          gradient: on ? _brand : null,
+          color: on ? null : _purple.withValues(alpha: .55),
+          boxShadow: [BoxShadow(color: glow.withValues(alpha: on ? .35 : .14), blurRadius: on ? 48 : 24, spreadRadius: 2)],
         ),
-        child: Stack(alignment: Alignment.center, children: [
-          if (busy) SizedBox(width: 170, height: 170, child: CircularProgressIndicator(strokeWidth: 3, color: color)),
-          Icon(Icons.power_settings_new_rounded, size: 76, color: color),
-        ]),
+        child: Container(
+          decoration: const BoxDecoration(shape: BoxShape.circle, color: _surface),
+          child: Stack(alignment: Alignment.center, children: [
+            if (busy) SizedBox(width: 170, height: 170, child: CircularProgressIndicator(strokeWidth: 3, color: glow)),
+            on
+                ? ShaderMask(
+                    shaderCallback: (r) => _brand.createShader(r),
+                    child: const Icon(Icons.power_settings_new_rounded, size: 76, color: Colors.white),
+                  )
+                : const Icon(Icons.power_settings_new_rounded, size: 76, color: _purple),
+          ]),
+        ),
       ),
     );
   }
@@ -304,11 +535,11 @@ class _CountryChip extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? _gold.withValues(alpha: .14) : _surface,
+            color: selected ? _purple.withValues(alpha: .16) : _surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: selected ? _gold : _line),
+            border: Border.all(color: selected ? _purple : _line),
           ),
-          child: Text(label, style: TextStyle(fontSize: 15, color: selected ? _gold : Colors.white)),
+          child: Text(label, style: TextStyle(fontSize: 15, color: selected ? Colors.white : Colors.white70)),
         ),
       );
 }
@@ -334,7 +565,7 @@ class _SubscriptionCard extends StatelessWidget {
       color = _red;
     } else {
       line = 'Подписка до ${_d(exp)}';
-      if (left.inDays < 3) color = _gold;
+      if (left.inDays < 3) color = _purple;
     }
     return Container(
       padding: const EdgeInsets.all(16),
@@ -351,7 +582,7 @@ class _SubscriptionCard extends StatelessWidget {
           Expanded(
             child: FilledButton(
               onPressed: onBot,
-              style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black, minimumSize: const Size.fromHeight(44)),
+              style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(44)),
               child: const Text('Продлить', style: TextStyle(fontWeight: FontWeight.w600)),
             ),
           ),
@@ -384,6 +615,131 @@ class _SubscriptionCard extends StatelessWidget {
   }
 }
 
+/// Connection settings (changes are saved and applied when the page closes).
+class SettingsPage extends StatefulWidget {
+  final Settings settings;
+  final Update? update;
+  final Future<Update?> Function() onCheckUpdate;
+  final VoidCallback onInstall;
+  const SettingsPage({super.key, required this.settings, required this.update, required this.onCheckUpdate, required this.onInstall});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  Settings get s => widget.settings;
+  Update? update;
+  bool checking = false;
+  String? checked;
+
+  @override
+  void initState() {
+    super.initState();
+    update = widget.update;
+  }
+
+  Widget _section(String title) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
+        child: Text(title, style: const TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
+      );
+
+  Widget _card(List<Widget> children) => Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(color: _surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: _line)),
+        child: Column(children: children),
+      );
+
+  Widget _radio<T>(String title, T value, T group, ValueChanged<T> onChanged, {String? subtitle}) => ListTile(
+        onTap: () => setState(() => onChanged(value)),
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle, style: const TextStyle(color: _muted, fontSize: 12)),
+        trailing: Icon(value == group ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+            color: value == group ? _green : _muted),
+      );
+
+  Widget _switch(String title, String subtitle, bool value, ValueChanged<bool> onChanged) => SwitchListTile(
+        value: value,
+        onChanged: (v) => setState(() => onChanged(v)),
+        title: Text(title),
+        subtitle: Text(subtitle, style: const TextStyle(color: _muted, fontSize: 12)),
+      );
+
+  static const _protoHints = {
+    'auto': 'Сам выбирает самый быстрый из работающих',
+    'main': 'Основной, маскируется под обычный сайт',
+    'grpc': 'Запасной, если основной режут',
+    'hy2': 'UDP (QUIC): быстрый, но на части мобильных сетей не работает',
+  };
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(backgroundColor: _bg, title: const Text('Настройки')),
+        body: ListView(padding: const EdgeInsets.only(bottom: 32), children: [
+          _section('ПРОТОКОЛ'),
+          _card([
+            for (final e in protocols.entries)
+              _radio(e.value, e.key, s.protocol, (v) => s.protocol = v, subtitle: _protoHints[e.key]),
+          ]),
+          _section('ПОДКЛЮЧЕНИЕ'),
+          _card([
+            _switch('Автопереключение', 'Если сервер или протокол перестал отвечать — сразу перейти на рабочий',
+                s.autoSwitch, (v) => s.autoSwitch = v),
+            _switch('Российские сайты напрямую', 'Госуслуги, банки и .ru открываются без VPN — быстрее и без блокировок',
+                s.directRu, (v) => s.directRu = v),
+            _switch('Подключаться при запуске', 'VPN включается сам, как только открываешь приложение',
+                s.autoConnect, (v) => s.autoConnect = v),
+            if (Platform.isAndroid)
+              ListTile(
+                onTap: Vpn.openSystemSettings,
+                title: const Text('Постоянный VPN и блокировка без VPN'),
+                subtitle: const Text('Системные настройки Android: «Постоянная VPN» и «Блокировать соединения без VPN»',
+                    style: TextStyle(color: _muted, fontSize: 12)),
+                trailing: const Icon(Icons.open_in_new_rounded, color: _muted, size: 20),
+              ),
+          ]),
+          _section('DNS'),
+          _card([
+            for (final e in dnsServers.entries) _radio(e.value.$1, e.key, s.dns, (v) => s.dns = v),
+          ]),
+          _section('ПРИЛОЖЕНИЕ'),
+          _card([
+            ListTile(
+              title: Text('NetKings $appVersion'),
+              subtitle: Text(
+                  update != null ? 'Доступна версия ${update!.version}' : (checked ?? 'Обновления проверяются сами'),
+                  style: TextStyle(color: update != null ? _green : _muted, fontSize: 12)),
+              trailing: update != null
+                  ? FilledButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        widget.onInstall();
+                      },
+                      style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white),
+                      child: const Text('Обновить'))
+                  : TextButton(
+                      onPressed: checking
+                          ? null
+                          : () async {
+                              setState(() => checking = true);
+                              final u = await widget.onCheckUpdate();
+                              if (mounted) {
+                                setState(() {
+                                  checking = false;
+                                  update = u;
+                                  checked = u == null ? 'Последняя версия' : null;
+                                });
+                              }
+                            },
+                      child: checking
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Проверить', style: TextStyle(color: _purple))),
+            ),
+          ]),
+        ]),
+      );
+}
+
 class _Welcome extends StatefulWidget {
   final Future<void> Function(String) onLink;
   final VoidCallback onBot;
@@ -408,7 +764,10 @@ class _WelcomeState extends State<_Welcome> {
   Widget build(BuildContext context) => ListView(
         padding: const EdgeInsets.fromLTRB(24, 56, 24, 24),
         children: [
-          const Icon(Icons.workspace_premium_rounded, color: _gold, size: 64),
+          ShaderMask(
+            shaderCallback: (r) => _brand.createShader(r),
+            child: const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 64),
+          ),
           const SizedBox(height: 12),
           const Text('NetKings VPN',
               textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
@@ -420,7 +779,7 @@ class _WelcomeState extends State<_Welcome> {
             onPressed: widget.onBot,
             icon: const Icon(Icons.send_rounded),
             label: const Text('Получить доступ в боте', style: TextStyle(fontWeight: FontWeight.w600)),
-            style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black, minimumSize: const Size.fromHeight(52)),
+            style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(52)),
           ),
           const SizedBox(height: 10),
           const Text('Пробный период 3 дня — бесплатно. В боте нажми «📲 Открыть в NetKings».',
