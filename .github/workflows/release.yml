@@ -1,6 +1,6 @@
-# Desktop builds: sing-box core + Flutter app for Windows and Linux.
+# Builds: sing-box core + Flutter app for Android, Windows and Linux.
 # Push a tag vX.Y.Z -> files are attached to that GitHub release; "Run workflow" -> artifacts only (for testing).
-# Android is built locally (release signing key is not stored on GitHub).
+# Android is signed with the release key from the repository secrets (ANDROID_*).
 name: release
 
 on:
@@ -99,9 +99,68 @@ jobs:
           name: linux
           path: dist/*.tar.gz
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box
+          ref: v${{ env.SING_BOX_VERSION }}
+          path: sing-box
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sing-box/go.mod
+          cache-dependency-path: sing-box/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: libbox.aar (gomobile)
+        working-directory: sing-box
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.12 github.com/sagernet/gomobile/cmd/gobind@v0.1.12
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          mkdir -p ../android/app/libs
+          gomobile bind -target android/arm64,android/arm -androidapi 23 -javapkg=io.nekohasekai -libname=box \
+            -trimpath -buildvcs=false \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=$SING_BOX_VERSION -s -w -buildid= -checklinkname=0" \
+            -tags "$SING_BOX_TAGS,badlinkname,tfogo_checklinkname0" -o ../android/app/libs/libbox.aar ./experimental/libbox
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=%s\n' \
+            "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" "$RUNNER_TEMP/release.jks" > "$RUNNER_TEMP/key.properties"
+          echo "NK_KEY_PROPERTIES=$RUNNER_TEMP/key.properties" >> "$GITHUB_ENV"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64,android-arm
+      - name: Package
+        run: |
+          v=$(sed -nE 's/^version:\s*([^+ ]+).*/\1/p' pubspec.yaml)
+          o=build/app/outputs/flutter-apk
+          mkdir -p dist
+          cp $o/app-arm64-v8a-release.apk "dist/NetKings-$v-android-arm64.apk"
+          cp $o/app-armeabi-v7a-release.apk "dist/NetKings-$v-android-armv7.apk"
+          rm -f "$RUNNER_TEMP/release.jks" "$RUNNER_TEMP/key.properties"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux]
+    needs: [android, windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -109,7 +168,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: "{windows,linux}"
+          pattern: "{android,windows,linux}"
           merge-multiple: true
       - name: Attach to the release
         env:

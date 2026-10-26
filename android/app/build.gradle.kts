@@ -1,8 +1,8 @@
 import java.util.Properties
 
-// release signing key: ~/dev/keys (outside the repo; losing it = no updates over installed APKs)
+// release signing key: ~/dev/keys locally, NK_KEY_PROPERTIES in CI (outside the repo; losing it = no updates)
 val keyProps = Properties().apply {
-    val f = file(System.getProperty("user.home") + "/dev/keys/key.properties")
+    val f = file(System.getenv("NK_KEY_PROPERTIES") ?: (System.getProperty("user.home") + "/dev/keys/key.properties"))
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
