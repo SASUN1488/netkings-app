@@ -132,7 +132,12 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   void _onVpn() {
     if (vpn.error != null && vpn.state == VpnState.stopped) message = 'Не удалось подключиться: ${vpn.error}';
     if (vpn.state == VpnState.started && monitor == null) {
-      monitor = Monitor(_secret, autoSwitch: settings.autoSwitch, onSwitch: _onSwitch, onDead: _onDead)
+      monitor = Monitor(_secret,
+          autoSwitch: settings.autoSwitch,
+          onSwitch: _onSwitch,
+          onDead: _onDead,
+          home: _countryFallback ? country : null,
+          onHome: _onHome)
         ..addListener(() => setState(() {}))
         ..start();
     } else if (vpn.state == VpnState.stopped && monitor != null) {
@@ -161,6 +166,14 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       _toast('Серверы страны не отвечают — переключаюсь на самый быстрый');
       await _restart();
     }
+  }
+
+  /// The picked country answers again after a fallback to "auto": go back to it.
+  Future<void> _onHome() async {
+    if (!_countryFallback) return;
+    _countryFallback = false;
+    _toast('${_countryName(country)} снова работает — возвращаюсь');
+    await _restart();
   }
 
   String _config() {
@@ -380,6 +393,11 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   /// Windows fonts have no flag emoji (they come out as "FI"): names only there
   static String _flag(Country c) => Platform.isWindows || c.flag.isEmpty ? '' : '${c.flag} ';
 
+  String _countryName(String tag) {
+    final c = sub?.countries.where((c) => c.tag == tag) ?? const <Country>[];
+    return c.isEmpty ? 'Выбранная страна' : _flag(c.first) + c.first.name;
+  }
+
   /// "fi-relay3-grpc" -> "🇫🇮 Финляндия · VLESS gRPC · вход 2"
   String _leafLabel(String leaf) {
     final s = sub;
@@ -419,7 +437,6 @@ class _StatsBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = monitor;
-    final ping = m?.ping;
     Widget cell(IconData icon, String label, String value, Color color) => Expanded(
           child: Column(children: [
             Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -439,11 +456,26 @@ class _StatsBar extends StatelessWidget {
         Container(width: 1, height: 32, color: _line),
         cell(Icons.north_rounded, 'Отдача', m == null ? '—' : formatSpeed(m.up), _purple),
         Container(width: 1, height: 32, color: _line),
-        cell(Icons.network_ping_rounded, 'Пинг', m == null ? '—' : (ping == null ? '…' : '$ping мс'),
-            ping == null ? _muted : (ping < 400 ? _green : (ping < 1000 ? _purple : _red))),
+        cell(Icons.network_ping_rounded, 'Пинг', _pingText(m), _pingColor(m)),
       ]),
     );
   }
+}
+
+/// "…" only while the first answer is awaited; one missed round keeps the last value (greyed),
+/// two in a row are a real "нет ответа".
+String _pingText(Monitor? m) {
+  if (m == null) return '—';
+  if (m.misses >= 2) return 'нет ответа';
+  return m.ping == null ? '…' : '${m.ping} мс';
+}
+
+Color _pingColor(Monitor? m) {
+  final ping = m?.ping;
+  if (m == null || ping == null) return _muted;
+  if (m.misses >= 2) return _red;
+  if (m.misses == 1) return _muted;
+  return ping < 400 ? _green : (ping < 1000 ? _purple : _red);
 }
 
 class _UpdateCard extends StatelessWidget {

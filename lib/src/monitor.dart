@@ -12,19 +12,25 @@ const _testUrl = 'https://www.gstatic.com/generate_204';
 /// download / upload speed, ping through the tunnel, which server and protocol is in use.
 /// When the ping fails twice in a row, the country group is re-tested (the core then moves to the best
 /// working server / protocol); [onDead] is called when that does not help either.
+/// After such a fallback [home] is the group the user picked: it is re-tested every minute and [onHome]
+/// is called once it answers again.
 class Monitor extends ChangeNotifier {
   final String secret;
   final bool autoSwitch;
   final void Function(String)? onSwitch;     // the watchdog moved off a dead server: "переключился на ..."
   final Future<void> Function()? onDead;     // nothing in this country answers
+  final String? home;                        // e.g. "auto-fi" while the app runs on "auto" after a fallback
+  final Future<void> Function()? onHome;     // [home] answers again
   final int port;
-  Monitor(this.secret, {this.autoSwitch = true, this.onSwitch, this.onDead, this.port = clashPort});
+  Monitor(this.secret,
+      {this.autoSwitch = true, this.onSwitch, this.onDead, this.home, this.onHome, this.port = clashPort});
 
   int down = 0, up = 0;      // bytes per second
-  int? ping;                 // ms; null = no answer
+  int? ping;                 // ms of the last answer; null = none yet
+  int misses = 0;            // rounds in a row without an answer; ping is stale while > 0
   String? leaf;              // e.g. "fi-relay3-grpc"
   bool _running = false;
-  int _fails = 0, _deadRounds = 0;
+  int _fails = 0, _deadRounds = 0, _rounds = 0;
   HttpClient? _http;
   StreamSubscription? _traffic;
   Timer? _timer;
@@ -50,8 +56,9 @@ class Monitor extends ChangeNotifier {
     _http = null;
     down = up = 0;
     ping = null;
+    misses = 0;
     leaf = null;
-    _fails = _deadRounds = 0;
+    _fails = _deadRounds = _rounds = 0;
   }
 
   Future<dynamic> _get(String path, {Duration timeout = const Duration(seconds: 8)}) async {
@@ -112,8 +119,32 @@ class Monitor extends ChangeNotifier {
     }
   }
 
+  /// A single lost test (one dropped packet, the server's core restarting) is not a dead server: ask again.
+  Future<int?> _pingTwice(String? via) async {
+    final p = await _ping(via);
+    if (p != null || _http == null) return p;
+    await Future.delayed(retryDelay);
+    return _ping(via);
+  }
+
+  @visibleForTesting
+  Duration retryDelay = const Duration(seconds: 1);
+
   @visibleForTesting
   void attach() => _http ??= HttpClient();
+
+  /// Every 6th round (a minute) after a fallback: does the user's own pick answer again?
+  Future<void> _checkHome(String? group) async {
+    final h = home;
+    if (h == null || group == h || ++_rounds % 6 != 0) return;
+    try {
+      final r = await _get('/group/${Uri.encodeComponent(h)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
+          timeout: const Duration(seconds: 15));
+      if (r is Map && r.values.any((d) => d is num && d > 0) && _http != null) await onHome?.call();
+    } catch (_) {
+      // still dead
+    }
+  }
 
   /// One watchdog round (every 10 s while connected).
   @visibleForTesting
@@ -121,13 +152,15 @@ class Monitor extends ChangeNotifier {
     if (_http == null) return;
     try {
       final (group, now) = await _current();
-      final p = await _ping(now);
+      final p = await _pingTwice(now);
       if (_http == null) return;
-      ping = p;
+      if (p != null) ping = p;
+      misses = p == null ? misses + 1 : 0;
       leaf = now ?? leaf;       // the core's own re-picks (a faster server) are not announced
       notifyListeners();
       if (p != null) {
         _fails = _deadRounds = 0;
+        await _checkHome(group);
         return;
       }
       if (!autoSwitch || group == null || ++_fails < 2) return;
@@ -140,6 +173,7 @@ class Monitor extends ChangeNotifier {
       final again = await _ping(n);
       if (again != null) {
         ping = again;
+        misses = 0;
         _deadRounds = 0;
         if (n != null && n != leaf) onSwitch?.call(n);
         leaf = n ?? leaf;

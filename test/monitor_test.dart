@@ -10,6 +10,8 @@ class FakeCore {
   late HttpServer server;
   String now = 'pl-relay3-main';
   final dead = <String>{};
+  bool homeUp = false;
+  int dropNext = 0;
   final calls = <String>[];
 
   Future<void> start() async {
@@ -27,12 +29,14 @@ class FakeCore {
         body = {'now': now};
       } else if (p.endsWith('/delay') && p.startsWith('/proxies/')) {
         final tag = Uri.decodeComponent(p.split('/')[2]);
-        if (dead.contains(tag)) {
+        if (dead.contains(tag) || dropNext-- > 0) {
           code = 504;
           body = {'message': 'An error occurred in the delay test'};
         } else {
           body = {'delay': 120};
         }
+      } else if (p == '/group/auto-fi/delay') {
+        body = homeUp ? {'fi-relay-main': 90} : {};
       } else if (p == '/group/auto-pl/delay') {
         if (dead.contains(now)) now = ['pl-relay-main', 'pl-relay-grpc'].firstWhere((t) => !dead.contains(t), orElse: () => now);
         body = {'pl-relay-main': 100};
@@ -50,19 +54,23 @@ void main() {
     await core.start();
     final switched = <String>[];
     var deadCalls = 0;
-    final m = Monitor('s', port: core.server.port, onSwitch: switched.add, onDead: () async => deadCalls++)..attach();
+    final m = Monitor('s', port: core.server.port, onSwitch: switched.add, onDead: () async => deadCalls++)
+      ..retryDelay = Duration.zero
+      ..attach();
     await m.tick();
     expect(m.ping, 120);
     expect(m.leaf, 'pl-relay3-main');
 
     core.dead.add('pl-relay3-main');
-    await m.tick();                      // first failure: just noted
-    expect(m.ping, isNull);
+    await m.tick();                      // first failure (asked twice): just noted, last ping kept
+    expect(m.ping, 120);
+    expect(m.misses, 1);
     expect(core.calls.where((c) => c.startsWith('/group/')), isEmpty);
     await m.tick();                      // second: group re-test -> live server
     expect(core.calls.where((c) => c == '/group/auto-pl/delay').length, 1);
     expect(m.leaf, 'pl-relay-main');
     expect(m.ping, 120);
+    expect(m.misses, 0);
     expect(switched, ['pl-relay-main']);
     expect(deadCalls, 0);
 
@@ -72,6 +80,42 @@ void main() {
       await m.tick();
     }
     expect(deadCalls, 1);
+    expect(m.misses, greaterThanOrEqualTo(2));
+    m.stop();
+    await core.server.close(force: true);
+  });
+
+  test('one lost ping is asked again, not counted', () async {
+    final core = FakeCore();
+    await core.start();
+    final m = Monitor('s', port: core.server.port)
+      ..retryDelay = Duration.zero
+      ..attach();
+    core.dropNext = 1;                   // one dropped delay test
+    await m.tick();
+    expect(m.ping, 120);
+    expect(m.misses, 0);
+    m.stop();
+    await core.server.close(force: true);
+  });
+
+  test('after a fallback the picked country is re-tested every minute and taken back', () async {
+    final core = FakeCore();
+    await core.start();
+    var homeCalls = 0;
+    final m = Monitor('s', port: core.server.port, home: 'auto-fi', onHome: () async => homeCalls++)
+      ..retryDelay = Duration.zero
+      ..attach();
+    for (var i = 0; i < 6; i++) {
+      await m.tick();
+    }
+    expect(core.calls.where((c) => c == '/group/auto-fi/delay').length, 1);
+    expect(homeCalls, 0);                // still dead
+    core.homeUp = true;
+    for (var i = 0; i < 6; i++) {
+      await m.tick();
+    }
+    expect(homeCalls, 1);
     m.stop();
     await core.server.close(force: true);
   });
