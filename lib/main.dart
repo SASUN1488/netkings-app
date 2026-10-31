@@ -327,11 +327,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
           Row(children: [
-            ShaderMask(
-              shaderCallback: (r) => _brand.createShader(r),
-              child: const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 28),
-            ),
-            const SizedBox(width: 8),
+            Image.asset('assets/icon/icon.png', width: 30, height: 30, filterQuality: FilterQuality.medium),
+            const SizedBox(width: 10),
             const Text('NetKings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: .3)),
             const Spacer(),
             IconButton(

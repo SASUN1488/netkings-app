@@ -5,7 +5,7 @@ import 'dart:math';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
-const appVersion = '0.2.1';
+const appVersion = '0.2.2';
 
 /// One country the user can pick: a urltest group over all entries x protocols of that exit.
 class Country {
