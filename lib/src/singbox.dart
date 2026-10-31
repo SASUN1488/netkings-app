@@ -9,6 +9,10 @@ const _directSuffixes = ['.ru', '.su', '.xn--p1ai'];
 /// The core's clash API on localhost: traffic / ping / which server is in use, and forced re-tests.
 const clashPort = 29190;
 
+/// Local proxy (login "nk" + the clash secret) into the picked country: the monitor keeps one connection open
+/// through it, so the shown ping is one round trip, not the handshakes of a fresh connection.
+const pingPort = 29191;
+
 /// Leaf outbound tag `exit-entry-protocol` (e.g. "fi-relay3-grpc") -> protocol label.
 String protocolOf(String tag) => tag.split('-').last;
 
@@ -41,6 +45,16 @@ String buildConfig(Subscription sub, String selected, [Settings? settings, Strin
         'strict_route': true,
         'stack': 'mixed',
       },
+      if (secret.isNotEmpty)
+        {
+          'type': 'mixed',
+          'tag': 'ping',
+          'listen': '127.0.0.1',
+          'listen_port': pingPort,
+          'users': [
+            {'username': 'nk', 'password': secret},
+          ],
+        },
     ],
     'outbounds': [
       ..._outbounds(sub, s.protocol),
@@ -49,6 +63,7 @@ String buildConfig(Subscription sub, String selected, [Settings? settings, Strin
     ],
     'route': {
       'rules': [
+        if (secret.isNotEmpty) {'inbound': ['ping'], 'outbound': 'proxy'},
         {'action': 'sniff'},
         {'protocol': 'dns', 'action': 'hijack-dns'},
         {'ip_is_private': true, 'outbound': 'direct'},

@@ -125,4 +125,35 @@ void main() {
     expect(formatSpeed(125000), '1.0 Мбит/с');
     expect(formatSpeed(5000000), '40 Мбит/с');
   });
+
+  // against a real core: NK_SINGBOX=path/to/sing-box flutter test test/monitor_test.dart
+  test('ping goes through the core\'s login proxy over a kept connection', () async {
+    final bin = Platform.environment['NK_SINGBOX'];
+    if (bin == null) return;
+    final dir = await Directory.systemTemp.createTemp('nk');
+    final cfg = File('${dir.path}/c.json')
+      ..writeAsStringSync(jsonEncode({
+        'log': {'level': 'info', 'output': '${dir.path}/log'},
+        'inbounds': [
+          {'type': 'mixed', 'tag': 'ping', 'listen': '127.0.0.1', 'listen_port': 29291,
+            'users': [{'username': 'nk', 'password': 's3cret'}]},
+        ],
+        'outbounds': [{'type': 'direct', 'tag': 'proxy'}],
+      }));
+    final core = await Process.start(bin, ['run', '-c', cfg.path]);
+    addTearDown(() async {
+      core.kill();
+      await dir.delete(recursive: true);
+    });
+    await Future.delayed(const Duration(seconds: 1));
+    final good = Monitor('s3cret', proxyPort: 29291)..attach();
+    for (var i = 0; i < 3; i++) {
+      expect(await good.rtt(), isNotNull);
+    }
+    // all rounds over one kept tunnel
+    final log = File('${dir.path}/log').readAsStringSync();
+    expect(RegExp('inbound connection from').allMatches(log).length, 1);
+    final wrong = Monitor('nope', proxyPort: 29291)..attach();
+    expect(await wrong.rtt(), isNull);          // the proxy is not open to other apps on the device
+  });
 }

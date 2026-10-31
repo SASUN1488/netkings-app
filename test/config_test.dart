@@ -11,7 +11,7 @@ void main() {
     if (path == null) return;
     final sub = Subscription('https://x/sub/y', jsonDecode(File(path).readAsStringSync()));
     for (final sel in ['auto', ...sub.countries.map((c) => c.tag)]) {
-      final cfg = buildConfig(sub, sel);
+      final cfg = buildConfig(sub, sel, null, 'testsecret');
       File('${Platform.environment['NK_OUT']}/config-$sel.json').writeAsStringSync(cfg);
       final proxy = (jsonDecode(cfg)['outbounds'] as List).firstWhere((o) => o['tag'] == 'proxy');
       expect(proxy['default'], sel);

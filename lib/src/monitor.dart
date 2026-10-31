@@ -22,8 +22,15 @@ class Monitor extends ChangeNotifier {
   final String? home;                        // e.g. "auto-fi" while the app runs on "auto" after a fallback
   final Future<void> Function()? onHome;     // [home] answers again
   final int port;
+  final int proxyPort;
   Monitor(this.secret,
-      {this.autoSwitch = true, this.onSwitch, this.onDead, this.home, this.onHome, this.port = clashPort});
+      {this.autoSwitch = true,
+      this.onSwitch,
+      this.onDead,
+      this.home,
+      this.onHome,
+      this.port = clashPort,
+      this.proxyPort = pingPort});
 
   int down = 0, up = 0;      // bytes per second
   int? ping;                 // ms of the last answer; null = none yet
@@ -32,6 +39,7 @@ class Monitor extends ChangeNotifier {
   bool _running = false;
   int _fails = 0, _deadRounds = 0, _rounds = 0;
   HttpClient? _http;
+  _Tunnel? _tunnel;          // kept open between rounds through the core's ping proxy
   StreamSubscription? _traffic;
   Timer? _timer;
 
@@ -54,6 +62,8 @@ class Monitor extends ChangeNotifier {
     _traffic?.cancel();
     _http?.close(force: true);
     _http = null;
+    _tunnel?.close();
+    _tunnel = null;
     down = up = 0;
     ping = null;
     misses = 0;
@@ -127,11 +137,40 @@ class Monitor extends ChangeNotifier {
     return _ping(via);
   }
 
+  /// The shown ping: one request over an already open connection through the server in use (one round trip
+  /// phone -> entry -> exit -> site and back). The core's delay test above opens a new connection each time,
+  /// so it also counts the TCP / REALITY / TLS handshakes (~3-4 round trips): right for "is it alive",
+  /// too big for a number people compare with other VPNs. Plain HTTP inside the tunnel (the way to the exit
+  /// is encrypted anyway) and our own socket: dart's HttpClient opens a new connection per request via a proxy.
+  Future<int?> _rtt() async {
+    for (var i = 0; i < 2; i++) {      // a kept tunnel may be dead (the core switched servers): one reconnect
+      if (_http == null) return null;
+      try {
+        var t = _tunnel;
+        if (t == null || t.closed) {
+          t = _tunnel = await _Tunnel.open(proxyPort, 'nk', secret);
+          await t.request();           // not timed: the exit only now connects to the site
+        }
+        final sw = Stopwatch()..start();
+        await t.request();
+        return sw.elapsedMilliseconds;
+      } catch (_) {
+        // no proxy (older core / tests) or a dropped tunnel: the delay test's number is shown instead
+        _tunnel?.close();
+        _tunnel = null;
+      }
+    }
+    return null;
+  }
+
   @visibleForTesting
   Duration retryDelay = const Duration(seconds: 1);
 
   @visibleForTesting
   void attach() => _http ??= HttpClient();
+
+  @visibleForTesting
+  Future<int?> rtt() => _rtt();
 
   /// Every 6th round (a minute) after a fallback: does the user's own pick answer again?
   Future<void> _checkHome(String? group) async {
@@ -154,7 +193,8 @@ class Monitor extends ChangeNotifier {
       final (group, now) = await _current();
       final p = await _pingTwice(now);
       if (_http == null) return;
-      if (p != null) ping = p;
+      if (p != null) ping = await _rtt() ?? p;
+      if (_http == null) return;
       misses = p == null ? misses + 1 : 0;
       leaf = now ?? leaf;       // the core's own re-picks (a faster server) are not announced
       notifyListeners();
@@ -172,7 +212,7 @@ class Monitor extends ChangeNotifier {
       final (_, n) = await _current();
       final again = await _ping(n);
       if (again != null) {
-        ping = again;
+        ping = await _rtt() ?? again;
         misses = 0;
         _deadRounds = 0;
         if (n != null && n != leaf) onSwitch?.call(n);
@@ -191,6 +231,72 @@ class Monitor extends ChangeNotifier {
   void dispose() {
     stop();
     super.dispose();
+  }
+}
+
+/// HTTP CONNECT tunnel to www.gstatic.com:80 through the core's local proxy, for repeated
+/// `HEAD /generate_204` over one connection.
+class _Tunnel {
+  static const _host = 'www.gstatic.com';
+  static const _timeout = Duration(seconds: 5);
+  final Socket _s;
+  final _buf = <int>[];
+  Completer<void>? _more;
+  bool closed = false;
+
+  _Tunnel(this._s) {
+    _s.listen((d) {
+      _buf.addAll(d);
+      _wake();
+    }, onDone: close, onError: (_) => close(), cancelOnError: true);
+  }
+
+  static Future<_Tunnel> open(int port, String user, String password) async {
+    final t = _Tunnel(await Socket.connect('127.0.0.1', port, timeout: _timeout));
+    final auth = base64.encode(utf8.encode('$user:$password'));
+    t._s.write('CONNECT $_host:80 HTTP/1.1\r\nHost: $_host:80\r\nProxy-Authorization: Basic $auth\r\n\r\n');
+    final head = await t._head();
+    if (!head.startsWith(RegExp(r'HTTP/1\.[01] 200'))) {
+      t.close();
+      throw HttpException('proxy: ${head.split('\r\n').first}');
+    }
+    return t;
+  }
+
+  /// One HEAD /generate_204; completes when the response head is in (204 has no body).
+  Future<void> request() async {
+    _s.write('HEAD /generate_204 HTTP/1.1\r\nHost: $_host\r\n\r\n');
+    final head = await _head();
+    if (!head.startsWith('HTTP/1.')) throw HttpException('bad answer');
+    if (head.toLowerCase().contains('connection: close')) close();
+  }
+
+  /// The bytes up to the next empty line.
+  Future<String> _head() async {
+    while (true) {
+      for (var i = 0; i + 3 < _buf.length; i++) {
+        if (_buf[i] == 13 && _buf[i + 1] == 10 && _buf[i + 2] == 13 && _buf[i + 3] == 10) {
+          final h = latin1.decode(_buf.sublist(0, i));
+          _buf.removeRange(0, i + 4);
+          return h;
+        }
+      }
+      if (closed) throw const SocketException('tunnel closed');
+      _more = Completer();
+      await _more!.future.timeout(_timeout);
+    }
+  }
+
+  void _wake() {
+    _more?.complete();
+    _more = null;
+  }
+
+  void close() {
+    if (closed) return;
+    closed = true;
+    _s.destroy();
+    _wake();
   }
 }
 
