@@ -258,25 +258,6 @@ class Monitor extends ChangeNotifier {
   }
 }
 
-/// Without the core running (not connected): TCP connect time to each server's entry host:port, in ms,
-/// null = no connection in 3 s. Says only that the entry is reachable, not that the whole way works.
-Future<Map<String, int?>> tcpPings(Map<String, (String, int)> targets) async {
-  Future<int?> one((String, int) t) async {
-    final sw = Stopwatch()..start();
-    try {
-      final s = await Socket.connect(t.$1, t.$2, timeout: const Duration(seconds: 3));
-      s.destroy();
-      return sw.elapsedMilliseconds;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  final keys = targets.keys.toList();
-  final r = await Future.wait(keys.map((k) => one(targets[k]!)));
-  return {for (var i = 0; i < keys.length; i++) keys[i]: r[i]};
-}
-
 /// HTTP CONNECT tunnel to www.gstatic.com:80 through the core's local proxy, for repeated
 /// `HEAD /generate_204` over one connection.
 class _Tunnel {

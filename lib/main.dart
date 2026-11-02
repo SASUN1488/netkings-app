@@ -99,7 +99,6 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     final link = await Vpn.initialLink();
     setState(() => loading = false);
     unawaited(_checkUpdate());
-    if (sub != null) unawaited(_testPings());
     if (link != null) {
       await _importLink(link);
     } else if (sub != null) {
@@ -162,6 +161,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     } else if (vpn.state == VpnState.stopped && monitor != null) {
       monitor!.dispose();
       monitor = null;
+      pings = {}; // numbers from the tunnel are meaningless without it: "—" until the next connect
     }
     setState(() {});
   }
@@ -320,21 +320,16 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
   /// Connected: a real request through every server (the core's delay test). Not connected: TCP connect
   /// time to each entry (shows only that the entry is reachable).
+  /// Only while connected: a real request through every server (the core's delay test). Without the core
+  /// a direct check would measure only the way to the entry — or to another VPN app's tunnel (fake "6 ms").
   Future<void> _testPings() async {
-    final m = monitor, s = sub;
-    if (testing || s == null) return;
+    final m = monitor;
+    if (testing || m == null) return;
     setState(() => testing = true);
-    final leaves = _leaves;
-    final r = m != null
-        ? await m.testServers(leaves)
-        : await tcpPings({
-            for (final o in s.outbounds)
-              if (leaves.contains('${o['tag']}') && o['server'] is String && o['server_port'] is num)
-                '${o['tag']}': (o['server'] as String, (o['server_port'] as num).toInt()),
-          });
+    final r = await m.testServers(_leaves);
     if (mounted) {
       setState(() {
-        pings = r;
+        if (monitor == m) pings = r; // disconnected meanwhile: keep "—"
         testing = false;
       });
     }
@@ -526,7 +521,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
               IconButton(
                 tooltip: 'Проверить пинг',
                 visualDensity: VisualDensity.compact,
-                onPressed: testing ? null : _testPings,
+                onPressed: testing || monitor == null ? null : _testPings,
                 icon: testing
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.speed_rounded, color: _muted, size: 20),
@@ -573,7 +568,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
               const Spacer(),
               IconButton(
                 tooltip: 'Проверить пинг',
-                onPressed: testing ? null : _testPings,
+                onPressed: testing || monitor == null ? null : _testPings,
                 icon: testing
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.speed_rounded, color: _muted),
@@ -1055,11 +1050,11 @@ class _ServerRow extends StatelessWidget {
                   child: ScaleTransition(scale: Tween(begin: .8, end: 1.0).animate(a), child: child),
                 ),
                 child: Text(
-                  !tested ? '' : (p == null ? 'n/a' : '$p мс'),
+                  !tested ? '—' : (p == null ? 'n/a' : '$p мс'),
                   key: ValueKey('$tested$p'),
                   style: TextStyle(
                     fontSize: 14,
-                    color: p == null ? _red : (p < 700 ? _green : (p < 1500 ? _purple : _red)),
+                    color: !tested ? _muted : (p == null ? _red : (p < 700 ? _green : (p < 1500 ? _purple : _red))),
                   ),
                 ),
               ),
