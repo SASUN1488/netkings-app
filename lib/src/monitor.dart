@@ -19,7 +19,7 @@ class Monitor extends ChangeNotifier {
   final bool autoSwitch;
   final void Function(String)? onSwitch;     // the watchdog moved off a dead server: "переключился на ..."
   final Future<void> Function()? onDead;     // nothing in this country answers
-  final String? home;                        // e.g. "auto-fi" while the app runs on "auto" after a fallback
+  final String? home;                        // e.g. "auto-fi" (or a server picked by hand) during a fallback
   final Future<void> Function()? onHome;     // [home] answers again
   final int port;
   final int proxyPort;
@@ -177,12 +177,21 @@ class Monitor extends ChangeNotifier {
     final h = home;
     if (h == null || group == h || ++_rounds % 6 != 0) return;
     try {
-      final r = await _get('/group/${Uri.encodeComponent(h)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
+      // a group answers {server: ms, ...}, a single server {"delay": ms}
+      final kind = h.startsWith('auto') ? 'group' : 'proxies';
+      final r = await _get('/$kind/${Uri.encodeComponent(h)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
           timeout: const Duration(seconds: 15));
       if (r is Map && r.values.any((d) => d is num && d > 0) && _http != null) await onHome?.call();
     } catch (_) {
       // still dead
     }
+  }
+
+  /// Delay test through each of [tags] at once, for the server list: ms, or null = no answer.
+  /// Every test opens a new connection, so the numbers include the handshakes (bigger than the shown ping).
+  Future<Map<String, int?>> testServers(List<String> tags) async {
+    final r = await Future.wait(tags.map(_ping));
+    return {for (var i = 0; i < tags.length; i++) tags[i]: r[i]};
   }
 
   /// One watchdog round (every 10 s while connected).

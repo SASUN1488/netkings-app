@@ -27,6 +27,9 @@ class FakeCore {
         body = {'now': 'auto-pl'};
       } else if (p == '/proxies/auto-pl') {
         body = {'now': now};
+      } else if (p == '/proxies/fi-relay-lte/delay') {
+        code = homeUp ? 200 : 504;
+        body = homeUp ? {'delay': 300} : {'message': 'An error occurred in the delay test'};
       } else if (p.endsWith('/delay') && p.startsWith('/proxies/')) {
         final tag = Uri.decodeComponent(p.split('/')[2]);
         if (dead.contains(tag) || dropNext-- > 0) {
@@ -116,6 +119,29 @@ void main() {
       await m.tick();
     }
     expect(homeCalls, 1);
+    m.stop();
+    await core.server.close(force: true);
+  });
+
+  test('a hand-picked server is re-tested by itself after a fallback and taken back', () async {
+    final core = FakeCore();
+    await core.start();
+    var homeCalls = 0;
+    final m = Monitor('s', port: core.server.port, home: 'fi-relay-lte', onHome: () async => homeCalls++)
+      ..retryDelay = Duration.zero
+      ..attach();
+    for (var i = 0; i < 6; i++) {
+      await m.tick();
+    }
+    expect(core.calls.where((c) => c == '/proxies/fi-relay-lte/delay').length, 1);
+    expect(homeCalls, 0);
+    core.homeUp = true;
+    for (var i = 0; i < 6; i++) {
+      await m.tick();
+    }
+    expect(homeCalls, 1);
+    final r = await m.testServers(['pl-relay-main', 'fi-relay-lte']);
+    expect(r, {'pl-relay-main': 120, 'fi-relay-lte': 300});
     m.stop();
     await core.server.close(force: true);
   });

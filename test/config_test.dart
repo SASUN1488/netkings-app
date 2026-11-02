@@ -16,6 +16,12 @@ void main() {
       final proxy = (jsonDecode(cfg)['outbounds'] as List).firstWhere((o) => o['tag'] == 'proxy');
       expect(proxy['default'], sel);
     }
+    // a server picked by hand: the selector gets it as one more choice and starts on it
+    final leaf = leafTags(sub).last;
+    expect(leafTags(sub).every((t) => !t.startsWith('auto')), true);
+    final proxy = (jsonDecode(buildConfig(sub, leaf, null, 's'))['outbounds'] as List).firstWhere((o) => o['tag'] == 'proxy');
+    expect(proxy['default'], leaf);
+    expect(proxy['outbounds'], contains(leaf));
     expect(parseSubscriptionLink('netkings://import/https%3A%2F%2F31.129.33.111%3A2096%2Fsub%2Fabc'),
         'https://31.129.33.111:2096/sub/abc');
   });

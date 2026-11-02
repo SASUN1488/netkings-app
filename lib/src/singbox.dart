@@ -16,11 +16,15 @@ const pingPort = 29191;
 /// Leaf outbound tag `exit-entry-protocol` (e.g. "fi-relay3-grpc") -> protocol label.
 String protocolOf(String tag) => tag.split('-').last;
 
-/// Full sing-box config for the core: the subscription's outbounds + a selector on the picked country,
-/// TUN inbound (Android VpnService / desktop TUN), DNS over the tunnel.
+/// The single servers of the subscription ("fi-relay3-grpc"), in subscription order (groups left out).
+List<String> leafTags(Subscription sub) =>
+    [for (final o in sub.outbounds) if (o['type'] != 'urltest' && o['type'] != 'selector') '${o['tag']}'];
+
+/// Full sing-box config for the core: the subscription's outbounds + a selector on the picked country
+/// (or on one server the user picked by hand), TUN inbound (Android VpnService / desktop TUN), DNS over the tunnel.
 String buildConfig(Subscription sub, String selected, [Settings? settings, String secret = '']) {
   final s = settings ?? Settings();
-  final groups = ['auto', ...sub.countries.map((c) => c.tag)];
+  final groups = ['auto', ...sub.countries.map((c) => c.tag), if (leafTags(sub).contains(selected)) selected];
   final dns = dnsServers[s.dns]!.$2;
   final config = {
     'log': {'level': 'warn', 'timestamp': true},

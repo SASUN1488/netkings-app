@@ -64,8 +64,12 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   Update? update;
   double? updateProgress;
   String country = 'auto';
+  bool autoPick = true;             // "Автовыбор": the app picks the server in [country]; off = [server] by hand
+  String? server;                   // e.g. "fi-relay3-grpc"
+  Map<String, int?> pings = {};     // server list: last delay test, null = no answer
+  bool testing = false;
   bool loading = true, refreshing = false;
-  // the watchdog gave up on the picked protocol / country: "auto" until the user connects again
+  // the watchdog gave up on the picked protocol / country / server: a wider pick until the user connects again
   bool _protoFallback = false, _countryFallback = false;
   String? message;
   DateTime? _lastFetch, _lastUpdateCheck;
@@ -81,6 +85,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
   Future<void> _init() async {
     country = await Store.read('country') ?? 'auto';
+    autoPick = await Store.read('auto_pick') != '0';
+    server = await Store.read('server');
     settings = await Settings.load();
     sub = await cachedSubscription();
     final link = await Vpn.initialLink();
@@ -136,7 +142,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
           autoSwitch: settings.autoSwitch,
           onSwitch: _onSwitch,
           onDead: _onDead,
-          home: _countryFallback ? country : null,
+          home: _countryFallback ? _pick : null,
           onHome: _onHome)
         ..addListener(() => setState(() {}))
         ..start();
@@ -154,32 +160,50 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     if (mounted) _toast('Переключился: ${_leafLabel(leaf)}');
   }
 
-  /// Nothing in the picked group answers even after a re-test: widen to every protocol, then every country.
+  List<String> get _leaves => sub == null ? const [] : leafTags(sub!);
+
+  /// A server picked by hand that the subscription still has.
+  bool get _manual => !autoPick && server != null && _leaves.contains(server);
+
+  /// What the core is told to use: the hand-picked server, else the country group ("auto" = all of them).
+  String get _pick => _manual ? server! : country;
+
+  /// Where a fallback goes: a dead hand-picked server -> the best one of its country; a dead country -> "auto".
+  String get _fallbackTo {
+    if (!_manual) return 'auto';
+    final c = sub!.countries.where((c) => c.id == server!.split('-').first);
+    return c.isEmpty ? 'auto' : c.first.tag;
+  }
+
+  /// Nothing in the picked group answers even after a re-test: widen to every protocol, then every country
+  /// (a hand-picked server: to its country).
   Future<void> _onDead() async {
     if (!settings.autoSwitch) return;
-    if ((settings.protocol != 'auto') && !_protoFallback) {
+    if (!_manual && settings.protocol != 'auto' && !_protoFallback) {
       _protoFallback = true;
       _toast('${protocols[settings.protocol]} не отвечает — пробую все протоколы');
       await _restart();
-    } else if (country != 'auto' && !_countryFallback) {
+    } else if (_pick != 'auto' && !_countryFallback) {
       _countryFallback = true;
-      _toast('Серверы страны не отвечают — переключаюсь на самый быстрый');
+      _toast(_manual
+          ? 'Сервер не отвечает — временно переключаюсь на рабочий'
+          : 'Серверы страны не отвечают — переключаюсь на самый быстрый');
       await _restart();
     }
   }
 
-  /// The picked country answers again after a fallback to "auto": go back to it.
+  /// The user's pick answers again after a fallback: go back to it.
   Future<void> _onHome() async {
     if (!_countryFallback) return;
     _countryFallback = false;
-    _toast('${_countryName(country)} снова работает — возвращаюсь');
+    _toast('${_manual ? _leafLabel(server!) : _countryName(country)} снова работает — возвращаюсь');
     await _restart();
   }
 
   String _config() {
     final s = settings.copy();
     if (_protoFallback) s.protocol = 'auto';
-    return buildConfig(sub!, _countryFallback ? 'auto' : country, s, _secret);
+    return buildConfig(sub!, _countryFallback ? _fallbackTo : _pick, s, _secret);
   }
 
   Future<void> _importLink(String text) async {
@@ -252,6 +276,44 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     setState(() => country = tag);
     await Store.write('country', tag);
     await _restart();
+  }
+
+  Future<void> _pickServer(String tag) async {
+    if (tag == server && _manual && !_countryFallback) return;
+    _countryFallback = false;
+    setState(() => server = tag);
+    await Store.write('server', tag);
+    await _restart();
+  }
+
+  /// "Автовыбор" off: start from the server in use, so nothing changes until the user picks another one.
+  Future<void> _setAutoPick(bool v) async {
+    final before = _pick;
+    final leaf = monitor?.leaf;
+    setState(() {
+      autoPick = v;
+      if (!v && !_leaves.contains(server) && leaf != null && _leaves.contains(leaf)) server = leaf;
+    });
+    await Store.write('auto_pick', v ? '1' : '0');
+    if (server != null) await Store.write('server', server!);
+    if (_pick != before || _countryFallback) {
+      _countryFallback = false;
+      await _restart();
+    }
+    if (!v && monitor != null && pings.isEmpty) unawaited(_testPings());
+  }
+
+  Future<void> _testPings() async {
+    final m = monitor;
+    if (m == null || testing) return;
+    setState(() => testing = true);
+    final r = await m.testServers(_leaves);
+    if (mounted) {
+      setState(() {
+        pings = r;
+        testing = false;
+      });
+    }
   }
 
   Future<void> _openSettings() async {
@@ -369,13 +431,22 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
           const SizedBox(height: 16),
           _StatsBar(monitor: on ? monitor : null),
           const SizedBox(height: 24),
-          const Text('СТРАНА', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
-          const SizedBox(height: 10),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            _CountryChip(label: '⚡ Авто', selected: country == 'auto', onTap: () => _pickCountry('auto')),
-            for (final c in s.countries)
-              _CountryChip(label: _flag(c) + c.name, selected: country == c.tag, onTap: () => _pickCountry(c.tag)),
+          Row(children: [
+            Text(autoPick ? 'СТРАНА' : 'СЕРВЕР', style: const TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
+            const Spacer(),
+            const Text('Автовыбор', style: TextStyle(fontSize: 14)),
+            const SizedBox(width: 4),
+            Switch(value: autoPick, onChanged: _setAutoPick),
           ]),
+          const SizedBox(height: 4),
+          if (autoPick)
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              _CountryChip(label: '⚡ Авто', selected: country == 'auto', onTap: () => _pickCountry('auto')),
+              for (final c in s.countries)
+                _CountryChip(label: _flag(c) + c.name, selected: country == c.tag, onTap: () => _pickCountry(c.tag)),
+            ])
+          else
+            _serverList(s),
           const SizedBox(height: 24),
           _SubscriptionCard(sub: s, onBot: () => _open(s.bot.isNotEmpty ? s.bot : _shopBot)),
           if (message != null) ...[
@@ -387,6 +458,45 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     );
   }
 
+  Widget _serverList(Subscription s) {
+    final on = monitor != null;
+    final leaves = _leaves;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        Expanded(
+          child: Text(
+              !_manual
+                  ? 'Выбери сервер — приложение будет подключаться только к нему'
+                  : (on ? 'Пинг — сколько отвечает каждый сервер' : 'Подключись, чтобы измерить пинг'),
+              style: const TextStyle(color: _muted, fontSize: 13)),
+        ),
+        TextButton.icon(
+          onPressed: on && !testing ? _testPings : null,
+          icon: testing
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.speed_rounded, size: 18),
+          label: const Text('Пинг'),
+        ),
+      ]),
+      for (final c in s.countries)
+        if (leaves.any((l) => l.startsWith('${c.id}-'))) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 6),
+            child: Text(_flag(c) + c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          for (final l in leaves.where((l) => l.startsWith('${c.id}-')))
+            _ServerTile(
+              label: _leafLabel(l, withCountry: false),
+              selected: _manual && server == l,
+              inUse: on && monitor!.leaf == l,
+              tested: pings.containsKey(l),
+              ping: pings[l],
+              onTap: () => _pickServer(l),
+            ),
+        ],
+    ]);
+  }
+
   /// Windows fonts have no flag emoji (they come out as "FI"): names only there
   static String _flag(Country c) => Platform.isWindows || c.flag.isEmpty ? '' : '${c.flag} ';
 
@@ -396,7 +506,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   }
 
   /// "fi-relay3-grpc" -> "🇫🇮 Финляндия · VLESS gRPC · вход 2"
-  String _leafLabel(String leaf) {
+  String _leafLabel(String leaf, {bool withCountry = true}) {
     final s = sub;
     final parts = leaf.split('-');
     if (s == null || parts.length < 3) return leaf;
@@ -410,13 +520,16 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       }
     }
     final entry = parts.sublist(1, parts.length - 1).join('-');
-    final proto = protocols[protocolOf(leaf)] ?? protocolOf(leaf);
+    final proto = protocols[protocolOf(leaf)] ?? _protoNames[protocolOf(leaf)] ?? protocolOf(leaf);
     return [
-      if (c.isNotEmpty) _flag(c.first) + c.first.name,
+      if (withCountry && c.isNotEmpty) _flag(c.first) + c.first.name,
       proto,
       if (entries.length > 1) 'вход ${entries.indexOf(entry) + 1}',
     ].join(' · ');
   }
+
+  /// Profiles that are not a choice in the settings (protocols) but do come in the subscription.
+  static const _protoNames = {'lte': 'VLESS LTE', 'reserve': 'VLESS XHTTP'};
 
   String _onLabel(Subscription s) {
     final leaf = monitor?.leaf;
@@ -571,6 +684,53 @@ class _CountryChip extends StatelessWidget {
           child: Text(label, style: TextStyle(fontSize: 15, color: selected ? Colors.white : Colors.white70)),
         ),
       );
+}
+
+class _ServerTile extends StatelessWidget {
+  final String label;
+  final bool selected, inUse, tested;
+  final int? ping;
+  final VoidCallback onTap;
+  const _ServerTile(
+      {required this.label, required this.selected, required this.inUse, required this.tested, this.ping, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = ping;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          decoration: BoxDecoration(
+            color: selected ? _purple.withValues(alpha: .16) : _surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? _purple : _line),
+          ),
+          child: Row(children: [
+            Icon(selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                size: 20, color: selected ? _green : _muted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(label, style: TextStyle(fontSize: 15, color: selected ? Colors.white : Colors.white70)),
+            ),
+            if (inUse && !selected)
+              const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: Text('сейчас', style: TextStyle(color: _green, fontSize: 12)),
+              ),
+            if (tested)
+              Text(p == null ? 'нет ответа' : '$p мс',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: p == null ? _red : (p < 800 ? _green : (p < 1500 ? _purple : _red)))),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 class _SubscriptionCard extends StatelessWidget {

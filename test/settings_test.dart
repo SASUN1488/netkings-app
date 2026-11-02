@@ -16,7 +16,10 @@ void main() {
       final cfg = jsonDecode(buildConfig(sub, 'auto', Settings()..protocol = p..directRu = p != 'hy2', 'sec'));
       for (final o in (cfg['outbounds'] as List).where((o) => o['type'] == 'urltest')) {
         expect(o['interrupt_exist_connections'], true);
-        if (p != 'auto') expect((o['outbounds'] as List).every((t) => protocolOf(t) == p), true);
+        // a protocol the subscription no longer has (hy2 since 2026-10-28) leaves the groups whole
+        if (p != 'auto' && leafTags(sub).any((t) => protocolOf(t) == p)) {
+          expect((o['outbounds'] as List).every((t) => protocolOf(t) == p), true);
+        }
       }
       File('${Platform.environment['NK_OUT']}/config-$p.json').writeAsStringSync(jsonEncode(cfg));
     }
