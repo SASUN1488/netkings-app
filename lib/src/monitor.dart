@@ -17,29 +17,31 @@ const _testUrl = 'https://www.gstatic.com/generate_204';
 class Monitor extends ChangeNotifier {
   final String secret;
   final bool autoSwitch;
-  final void Function(String)? onSwitch;     // the watchdog moved off a dead server: "переключился на ..."
-  final Future<void> Function()? onDead;     // nothing in this country answers
-  final String? home;                        // e.g. "auto-fi" (or a server picked by hand) during a fallback
-  final Future<void> Function()? onHome;     // [home] answers again
+  final void Function(String)? onSwitch; // the watchdog moved off a dead server: "переключился на ..."
+  final Future<void> Function()? onDead; // nothing in this country answers
+  final String? home; // e.g. "auto-fi" (or a server picked by hand) during a fallback
+  final Future<void> Function()? onHome; // [home] answers again
   final int port;
   final int proxyPort;
-  Monitor(this.secret,
-      {this.autoSwitch = true,
-      this.onSwitch,
-      this.onDead,
-      this.home,
-      this.onHome,
-      this.port = clashPort,
-      this.proxyPort = pingPort});
+  Monitor(
+    this.secret, {
+    this.autoSwitch = true,
+    this.onSwitch,
+    this.onDead,
+    this.home,
+    this.onHome,
+    this.port = clashPort,
+    this.proxyPort = pingPort,
+  });
 
-  int down = 0, up = 0;      // bytes per second
-  int? ping;                 // ms of the last answer; null = none yet
-  int misses = 0;            // rounds in a row without an answer; ping is stale while > 0
-  String? leaf;              // e.g. "fi-relay3-grpc"
+  int down = 0, up = 0; // bytes per second
+  int? ping; // ms of the last answer; null = none yet
+  int misses = 0; // rounds in a row without an answer; ping is stale while > 0
+  String? leaf; // e.g. "fi-relay3-grpc"
   bool _running = false;
   int _fails = 0, _deadRounds = 0, _rounds = 0;
   HttpClient? _http;
-  _Tunnel? _tunnel;          // kept open between rounds through the core's ping proxy
+  _Tunnel? _tunnel; // kept open between rounds through the core's ping proxy
   StreamSubscription? _traffic;
   Timer? _timer;
 
@@ -90,16 +92,23 @@ class Monitor extends ChangeNotifier {
       final req = await h.getUrl(Uri.parse('http://127.0.0.1:$port/traffic'));
       req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $secret');
       final resp = await req.close();
-      _traffic = resp.transform(utf8.decoder).transform(const LineSplitter()).listen((l) {
-        try {
-          final m = jsonDecode(l) as Map<String, dynamic>;
-          down = (m['down'] as num).toInt();
-          up = (m['up'] as num).toInt();
-          notifyListeners();
-        } on FormatException {
-          // partial line
-        }
-      }, onDone: _retryTraffic, onError: (_) => _retryTraffic());
+      _traffic = resp
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(
+            (l) {
+              try {
+                final m = jsonDecode(l) as Map<String, dynamic>;
+                down = (m['down'] as num).toInt();
+                up = (m['up'] as num).toInt();
+                notifyListeners();
+              } on FormatException {
+                // partial line
+              }
+            },
+            onDone: _retryTraffic,
+            onError: (_) => _retryTraffic(),
+          );
     } catch (_) {
       _retryTraffic();
     }
@@ -121,7 +130,9 @@ class Monitor extends ChangeNotifier {
   /// so the group re-test below really checks it again (and leaves it).
   Future<int?> _ping(String? via) async {
     try {
-      final r = await _get('/proxies/${Uri.encodeComponent(via ?? 'proxy')}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000');
+      final r = await _get(
+        '/proxies/${Uri.encodeComponent(via ?? 'proxy')}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
+      );
       final d = (r?['delay'] as num?)?.toInt();
       return d != null && d > 0 ? d : null;
     } catch (_) {
@@ -143,13 +154,14 @@ class Monitor extends ChangeNotifier {
   /// too big for a number people compare with other VPNs. Plain HTTP inside the tunnel (the way to the exit
   /// is encrypted anyway) and our own socket: dart's HttpClient opens a new connection per request via a proxy.
   Future<int?> _rtt() async {
-    for (var i = 0; i < 2; i++) {      // a kept tunnel may be dead (the core switched servers): one reconnect
+    for (var i = 0; i < 2; i++) {
+      // a kept tunnel may be dead (the core switched servers): one reconnect
       if (_http == null) return null;
       try {
         var t = _tunnel;
         if (t == null || t.closed) {
           t = _tunnel = await _Tunnel.open(proxyPort, 'nk', secret);
-          await t.request();           // not timed: the exit only now connects to the site
+          await t.request(); // not timed: the exit only now connects to the site
         }
         final sw = Stopwatch()..start();
         await t.request();
@@ -179,8 +191,10 @@ class Monitor extends ChangeNotifier {
     try {
       // a group answers {server: ms, ...}, a single server {"delay": ms}
       final kind = h.startsWith('auto') ? 'group' : 'proxies';
-      final r = await _get('/$kind/${Uri.encodeComponent(h)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
-          timeout: const Duration(seconds: 15));
+      final r = await _get(
+        '/$kind/${Uri.encodeComponent(h)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
+        timeout: const Duration(seconds: 15),
+      );
       if (r is Map && r.values.any((d) => d is num && d > 0) && _http != null) await onHome?.call();
     } catch (_) {
       // still dead
@@ -205,7 +219,7 @@ class Monitor extends ChangeNotifier {
       if (p != null) ping = await _rtt() ?? p;
       if (_http == null) return;
       misses = p == null ? misses + 1 : 0;
-      leaf = now ?? leaf;       // the core's own re-picks (a faster server) are not announced
+      leaf = now ?? leaf; // the core's own re-picks (a faster server) are not announced
       notifyListeners();
       if (p != null) {
         _fails = _deadRounds = 0;
@@ -215,9 +229,10 @@ class Monitor extends ChangeNotifier {
       if (!autoSwitch || group == null || ++_fails < 2) return;
       // the server in use stopped answering: re-test the group now instead of waiting for its next round
       _fails = 0;
-      await _get('/group/${Uri.encodeComponent(group)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
-              timeout: const Duration(seconds: 15))
-          .catchError((_) => null);
+      await _get(
+        '/group/${Uri.encodeComponent(group)}/delay?url=${Uri.encodeComponent(_testUrl)}&timeout=5000',
+        timeout: const Duration(seconds: 15),
+      ).catchError((_) => null);
       final (_, n) = await _current();
       final again = await _ping(n);
       if (again != null) {
@@ -243,6 +258,25 @@ class Monitor extends ChangeNotifier {
   }
 }
 
+/// Without the core running (not connected): TCP connect time to each server's entry host:port, in ms,
+/// null = no connection in 3 s. Says only that the entry is reachable, not that the whole way works.
+Future<Map<String, int?>> tcpPings(Map<String, (String, int)> targets) async {
+  Future<int?> one((String, int) t) async {
+    final sw = Stopwatch()..start();
+    try {
+      final s = await Socket.connect(t.$1, t.$2, timeout: const Duration(seconds: 3));
+      s.destroy();
+      return sw.elapsedMilliseconds;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  final keys = targets.keys.toList();
+  final r = await Future.wait(keys.map((k) => one(targets[k]!)));
+  return {for (var i = 0; i < keys.length; i++) keys[i]: r[i]};
+}
+
 /// HTTP CONNECT tunnel to www.gstatic.com:80 through the core's local proxy, for repeated
 /// `HEAD /generate_204` over one connection.
 class _Tunnel {
@@ -254,10 +288,15 @@ class _Tunnel {
   bool closed = false;
 
   _Tunnel(this._s) {
-    _s.listen((d) {
-      _buf.addAll(d);
-      _wake();
-    }, onDone: close, onError: (_) => close(), cancelOnError: true);
+    _s.listen(
+      (d) {
+        _buf.addAll(d);
+        _wake();
+      },
+      onDone: close,
+      onError: (_) => close(),
+      cancelOnError: true,
+    );
   }
 
   static Future<_Tunnel> open(int port, String user, String password) async {

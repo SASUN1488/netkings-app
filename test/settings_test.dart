@@ -13,7 +13,16 @@ void main() {
     if (path == null) return;
     final sub = Subscription('https://x/sub/y', jsonDecode(File(path).readAsStringSync()));
     for (final p in protocols.keys) {
-      final cfg = jsonDecode(buildConfig(sub, 'auto', Settings()..protocol = p..directRu = p != 'hy2', 'sec'));
+      final cfg = jsonDecode(
+        buildConfig(
+          sub,
+          'auto',
+          Settings()
+            ..protocol = p
+            ..directRu = p != 'grpc',
+          'sec',
+        ),
+      );
       for (final o in (cfg['outbounds'] as List).where((o) => o['type'] == 'urltest')) {
         expect(o['interrupt_exist_connections'], true);
         // a protocol the subscription no longer has (hy2 since 2026-10-28) leaves the groups whole
