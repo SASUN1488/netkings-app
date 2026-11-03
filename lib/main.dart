@@ -3,53 +3,76 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'src/monitor.dart';
+import 'src/secrets.dart';
 import 'src/settings.dart';
 import 'src/singbox.dart';
 import 'src/subscription.dart';
 import 'src/update.dart';
 import 'src/vpn.dart';
 
-const _bg = Color(0xFF0B0A10);
-const _surface = Color(0xFF15131D);
-const _line = Color(0xFF272335);
-const _purple = Color(0xFF9D6BFF);
-const _green = Color(0xFF2EE59D);
-const _muted = Color(0xFF8E8AA0);
+// colours come from the palette: an easter-egg look can take them from its picture (src/secrets.dart)
+Color get _bg => palette.bg;
+Color get _surface => palette.surface;
+Color get _line => palette.line;
+Color get _purple => palette.accent;
+Color get _green => palette.accent2;
+Color get _muted => palette.muted;
 const _red = Color(0xFFF0616D);
-const _brand = LinearGradient(colors: [_green, _purple], begin: Alignment.topLeft, end: Alignment.bottomRight);
+LinearGradient get _brand =>
+    LinearGradient(colors: [_green, _purple], begin: Alignment.topLeft, end: Alignment.bottomRight);
 const _shopBot = 'https://t.me/NetKingsvpn_bot';
 
-void main() => runApp(const NetKingsApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await loadEggs();
+  runApp(const NetKingsApp());
+}
 
 class NetKingsApp extends StatelessWidget {
   const NetKingsApp({super.key});
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'NetKings VPN',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: _bg,
-      colorScheme: const ColorScheme.dark(primary: _purple, secondary: _green, surface: _surface, error: _red),
-      switchTheme: SwitchThemeData(
-        thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.white : _muted),
-        trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _purple : _line),
+  Widget build(BuildContext context) => ValueListenableBuilder<Look?>(
+    valueListenable: look,
+    builder: (context, on, _) => MaterialApp(
+      title: 'NetKings VPN',
+      debugShowCheckedModeBanner: false,
+      builder: (context, child) {
+        final w = wallpaper;
+        return w == null
+            ? child!
+            : Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(color: _bg, child: w),
+                  child!,
+                ],
+              );
+      },
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: on != null ? Colors.transparent : _bg,
+        colorScheme: ColorScheme.dark(primary: _purple, secondary: _green, surface: _surface, error: _red),
+        switchTheme: SwitchThemeData(
+          thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.white : _muted),
+          trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _purple : _line),
+        ),
+        radioTheme: RadioThemeData(
+          fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _green : _muted),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: _surface,
+          contentTextStyle: TextStyle(color: Colors.white),
+        ),
+        fontFamily: 'Roboto',
+        useMaterial3: true,
       ),
-      radioTheme: RadioThemeData(
-        fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _green : _muted),
-      ),
-      snackBarTheme: const SnackBarThemeData(
-        backgroundColor: _surface,
-        contentTextStyle: TextStyle(color: Colors.white),
-      ),
-      fontFamily: 'Roboto',
-      useMaterial3: true,
+      home: const Home(),
     ),
-    home: const Home(),
   );
 }
 
@@ -86,6 +109,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     vpn.addListener(_onVpn);
+    look.addListener(_onEgg);
     Vpn.onLink(_importLink);
     _init();
   }
@@ -165,6 +189,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     }
     setState(() {});
   }
+
+  void _onEgg() => setState(() {});
 
   void _toast(String text) => ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
@@ -374,6 +400,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     vpn.removeListener(_onVpn);
+    look.removeListener(_onEgg);
     monitor?.dispose();
     vpn.dispose();
     super.dispose();
@@ -381,7 +408,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (loading) return Scaffold(body: Center(child: CircularProgressIndicator()));
     final s = sub;
     if (s == null) {
       return Scaffold(
@@ -399,13 +426,13 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
         body: SafeArea(
           bottom: false,
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
+            duration: Duration(milliseconds: 250),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             transitionBuilder: (child, a) => FadeTransition(
               opacity: a,
               child: SlideTransition(
-                position: Tween(begin: const Offset(0, .03), end: Offset.zero).animate(a),
+                position: Tween(begin: Offset(0, .03), end: Offset.zero).animate(a),
                 child: child,
               ),
             ),
@@ -450,41 +477,41 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       onRefresh: _refresh,
       color: _purple,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        padding: EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
           Row(
             children: [
               Image.asset('assets/icon/icon.png', width: 30, height: 30, filterQuality: FilterQuality.medium),
-              const SizedBox(width: 10),
-              const Text('NetKings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: .3)),
-              const Spacer(),
+              SizedBox(width: 10),
+              Text('NetKings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: .3)),
+              Spacer(),
               IconButton(
                 tooltip: 'Обновить подписку',
                 onPressed: refreshing ? null : _refresh,
                 icon: refreshing
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.refresh_rounded, color: _muted),
+                    ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(Icons.refresh_rounded, color: _muted),
               ),
               PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert_rounded, color: _muted),
+                icon: Icon(Icons.more_vert_rounded, color: _muted),
                 color: _surface,
                 onSelected: (v) => v == 'logout' ? _logout() : null,
-                itemBuilder: (_) => const [PopupMenuItem(value: 'logout', child: Text('Другая подписка'))],
+                itemBuilder: (_) => [PopupMenuItem(value: 'logout', child: Text('Другая подписка'))],
               ),
             ],
           ),
           if (update != null) ...[
-            const SizedBox(height: 12),
+            SizedBox(height: 12),
             _UpdateCard(update: update!, progress: updateProgress, onInstall: _install),
           ],
-          const SizedBox(height: 32),
+          SizedBox(height: 32),
           Center(
             child: _PowerButton(on: on, busy: busy, onTap: busy ? null : _toggle),
           ),
-          const SizedBox(height: 20),
+          SizedBox(height: 20),
           Center(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
+              duration: Duration(milliseconds: 300),
               child: Text(
                 statusText,
                 key: ValueKey(statusText),
@@ -492,27 +519,27 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
               ),
             ),
           ),
-          const SizedBox(height: 6),
+          SizedBox(height: 6),
           Center(
             child: Text(
               on ? _onLabel(s) : 'Нажми, чтобы подключиться',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: _muted, fontSize: 14),
+              style: TextStyle(color: _muted, fontSize: 14),
             ),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: 16),
           _StatsBar(monitor: on ? monitor : null),
-          const SizedBox(height: 24),
+          SizedBox(height: 24),
           Row(
             children: [
               InkWell(
                 onTap: _toggleCollapsed,
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  padding: EdgeInsets.symmetric(vertical: 6),
                   child: Row(
                     children: [
-                      const Text('СЕРВЕРЫ', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
+                      Text('СЕРВЕРЫ', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
                       Icon(collapsed ? Icons.expand_more_rounded : Icons.expand_less_rounded, color: _muted, size: 20),
                     ],
                   ),
@@ -523,33 +550,30 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                 visualDensity: VisualDensity.compact,
                 onPressed: testing || monitor == null ? null : _testPings,
                 icon: testing
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.speed_rounded, color: _muted, size: 20),
+                    ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(Icons.speed_rounded, color: _muted, size: 20),
               ),
-              const Spacer(),
-              const Text('Автовыбор', style: TextStyle(fontSize: 14)),
-              const SizedBox(width: 4),
+              Spacer(),
+              Text('Автовыбор', style: TextStyle(fontSize: 14)),
+              SizedBox(width: 4),
               Switch(value: autoPick, onChanged: _setAutoPick),
             ],
           ),
-          const SizedBox(height: 4),
+          SizedBox(height: 4),
           AnimatedSize(
-            duration: const Duration(milliseconds: 200),
+            duration: Duration(milliseconds: 200),
             alignment: Alignment.topCenter,
             child: Column(children: collapsed ? [_currentRow()] : _serverRows()),
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: 24),
           _SubscriptionCard(sub: s, onBot: () => _open(s.bot.isNotEmpty ? s.bot : _shopBot)),
-          if (message != null) ...[
-            const SizedBox(height: 16),
-            Text(message!, style: const TextStyle(color: _red, fontSize: 14)),
-          ],
+          if (message != null) ...[SizedBox(height: 16), Text(message!, style: TextStyle(color: _red, fontSize: 14))],
         ],
       ),
     );
   }
 
-  Map<String, Map> get _outboundsByTag => {for (final o in sub?.outbounds ?? const []) '${o['tag']}': o as Map};
+  Map<String, Map> get _outboundsByTag => {for (final o in sub?.outbounds ?? []) '${o['tag']}': o as Map};
 
   /// Like Incy: one flat list of every server — flag, name, protocol line, ping. A tap = that server only.
   Widget _serversTab(Subscription s) {
@@ -557,31 +581,31 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       onRefresh: _testPings,
       color: _purple,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
         children: [
           Row(
             children: [
-              const Padding(
+              Padding(
                 padding: EdgeInsets.only(left: 4),
                 child: Text('Серверы', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
               ),
-              const Spacer(),
+              Spacer(),
               IconButton(
                 tooltip: 'Проверить пинг',
                 onPressed: testing || monitor == null ? null : _testPings,
                 icon: testing
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.speed_rounded, color: _muted),
+                    ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(Icons.speed_rounded, color: _muted),
               ),
             ],
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+            padding: EdgeInsets.fromLTRB(4, 0, 4, 12),
             child: Text(
               autoPick
                   ? 'Сейчас включён автовыбор. Нажми на сервер — буду подключаться только к нему.'
                   : 'Подключаюсь только к выбранному серверу. Вернуть автовыбор — переключатель на главной.',
-              style: const TextStyle(color: _muted, fontSize: 13),
+              style: TextStyle(color: _muted, fontSize: 13),
             ),
           ),
           ..._serverRows(),
@@ -604,7 +628,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       return _ServerRow(
         flag: '⚡',
         title: 'Автовыбор',
-        parts: const [],
+        parts: [],
         subtitle: 'Лучший из ${_leaves.length} серверов',
         selected: false,
         inUse: false,
@@ -669,13 +693,13 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   /// Flag emoji of the server's country; Windows has no flag glyphs: the country code.
   String _flagOf(String leaf) {
     final id = leaf.split('-').first;
-    final c = sub?.countries.where((c) => c.id == id) ?? const <Country>[];
+    final c = sub?.countries.where((c) => c.id == id) ?? <Country>[];
     return Platform.isWindows || c.isEmpty || c.first.flag.isEmpty ? id.toUpperCase() : c.first.flag;
   }
 
   /// "VLESS · TCP · REALITY" from the outbound itself.
   static List<String> _protoParts(Map? o) {
-    if (o == null) return const [];
+    if (o == null) return [];
     final type = '${o['type']}';
     final tr = (o['transport'] as Map?)?['type'] as String? ?? (type == 'hysteria2' ? 'quic' : 'tcp');
     final tls = o['tls'] as Map?;
@@ -741,11 +765,11 @@ class _StatsBar extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, size: 14, color: color),
-              const SizedBox(width: 4),
-              Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
+              SizedBox(width: 4),
+              Text(label, style: TextStyle(color: _muted, fontSize: 12)),
             ],
           ),
-          const SizedBox(height: 4),
+          SizedBox(height: 4),
           Text(
             value,
             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: m == null ? _muted : Colors.white),
@@ -754,9 +778,10 @@ class _StatsBar extends StatelessWidget {
       ),
     );
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+      padding: EdgeInsets.symmetric(vertical: 12),
       decoration: BoxDecoration(
         color: _surface,
+        image: panelImage,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _line),
       ),
@@ -797,7 +822,7 @@ class _UpdateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+    padding: EdgeInsets.fromLTRB(16, 12, 12, 12),
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(16),
       border: Border.all(color: _purple.withValues(alpha: .6)),
@@ -805,18 +830,18 @@ class _UpdateCard extends StatelessWidget {
     ),
     child: Row(
       children: [
-        const Icon(Icons.system_update_rounded, color: _green),
-        const SizedBox(width: 12),
+        Icon(Icons.system_update_rounded, color: _green),
+        SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Доступна версия ${update.version}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 2),
+              Text('Доступна версия ${update.version}', style: TextStyle(fontWeight: FontWeight.w600)),
+              SizedBox(height: 2),
               progress == null
-                  ? Text('У тебя $appVersion', style: const TextStyle(color: _muted, fontSize: 13))
+                  ? Text('У тебя $appVersion', style: TextStyle(color: _muted, fontSize: 13))
                   : Padding(
-                      padding: const EdgeInsets.only(top: 6, right: 8),
+                      padding: EdgeInsets.only(top: 6, right: 8),
                       child: LinearProgressIndicator(value: progress, color: _green, backgroundColor: _line),
                     ),
             ],
@@ -824,8 +849,8 @@ class _UpdateCard extends StatelessWidget {
         ),
         FilledButton(
           onPressed: progress == null ? onInstall : null,
-          style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white),
-          child: const Text('Обновить'),
+          style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: palette.onAccent),
+          child: Text('Обновить'),
         ),
       ],
     ),
@@ -843,7 +868,7 @@ class _PowerButton extends StatefulWidget {
 
 /// Connected: the glow slowly breathes. Connecting: it pulses faster. A press shrinks the button a little.
 class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderStateMixin {
-  late final _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+  late final _pulse = AnimationController(vsync: this, duration: Duration(milliseconds: 2400));
   bool _pressed = false;
 
   @override
@@ -867,7 +892,7 @@ class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderSta
       }
     } else if (_pulse.isAnimating || _pulse.value != 0) {
       _pulse.stop();
-      _pulse.animateTo(0, duration: const Duration(milliseconds: 300));
+      _pulse.animateTo(0, duration: Duration(milliseconds: 300));
     }
   }
 
@@ -888,16 +913,16 @@ class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderSta
       onTapCancel: () => setState(() => _pressed = false),
       child: AnimatedScale(
         scale: _pressed ? .94 : 1,
-        duration: const Duration(milliseconds: 120),
+        duration: Duration(milliseconds: 120),
         child: AnimatedBuilder(
           animation: _pulse,
           builder: (context, child) {
             final t = Curves.easeInOut.transform(_pulse.value);
             return AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
+              duration: Duration(milliseconds: 300),
               width: 184,
               height: 184,
-              padding: const EdgeInsets.all(3),
+              padding: EdgeInsets.all(3),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: on ? _brand : null,
@@ -914,22 +939,22 @@ class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderSta
             );
           },
           child: Container(
-            decoration: const BoxDecoration(shape: BoxShape.circle, color: _surface),
+            decoration: BoxDecoration(shape: BoxShape.circle, color: _surface, image: panelImage),
             child: Stack(
               alignment: Alignment.center,
               children: [
                 if (busy)
                   SizedBox(width: 170, height: 170, child: CircularProgressIndicator(strokeWidth: 3, color: glow)),
                 AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
+                  duration: Duration(milliseconds: 300),
                   transitionBuilder: (child, a) => ScaleTransition(scale: a, child: child),
                   child: on
                       ? ShaderMask(
-                          key: const ValueKey('on'),
+                          key: ValueKey('on'),
                           shaderCallback: (r) => _brand.createShader(r),
-                          child: const Icon(Icons.power_settings_new_rounded, size: 76, color: Colors.white),
+                          child: Icon(Icons.power_settings_new_rounded, size: 76, color: Colors.white),
                         )
-                      : const Icon(Icons.power_settings_new_rounded, key: ValueKey('off'), size: 76, color: _purple),
+                      : Icon(Icons.power_settings_new_rounded, key: ValueKey('off'), size: 76, color: _purple),
                 ),
               ],
             ),
@@ -940,7 +965,7 @@ class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderSta
   }
 }
 
-const _protoColors = [Color(0xFF6EA8FE), _muted, Color(0xFFC6E36B)];
+List<Color> get _protoColors => [const Color(0xFF6EA8FE), _muted, const Color(0xFFC6E36B)];
 
 /// One server, Incy style: flag tile, name, coloured protocol line, ping on the right.
 class _ServerRow extends StatelessWidget {
@@ -976,6 +1001,7 @@ class _ServerRow extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(10, 10, 16, 10),
           decoration: BoxDecoration(
             color: selected ? _purple.withValues(alpha: .16) : _surface,
+            image: panelImage,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: selected ? _purple : _line),
           ),
@@ -1013,20 +1039,20 @@ class _ServerRow extends StatelessWidget {
                             margin: const EdgeInsets.only(left: 8),
                             width: 8,
                             height: 8,
-                            decoration: const BoxDecoration(color: _green, shape: BoxShape.circle),
+                            decoration: BoxDecoration(color: _green, shape: BoxShape.circle),
                           ),
                       ],
                     ),
                     const SizedBox(height: 3),
                     if (subtitle != null)
-                      Text(subtitle!, style: const TextStyle(color: _muted, fontSize: 13))
+                      Text(subtitle!, style: TextStyle(color: _muted, fontSize: 13))
                     else
                       Text.rich(
                         TextSpan(
                           children: [
                             for (var i = 0; i < parts.length; i++) ...[
                               if (i > 0)
-                                const TextSpan(
+                                TextSpan(
                                   text: ' · ',
                                   style: TextStyle(color: _muted),
                                 ),
@@ -1085,6 +1111,7 @@ class _NavBar extends StatelessWidget {
       padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
         color: _surface,
+        image: panelImage,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: _line),
       ),
@@ -1147,6 +1174,7 @@ class _SubscriptionCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: _surface,
+        image: panelImage,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _line),
       ),
@@ -1160,7 +1188,7 @@ class _SubscriptionCard extends StatelessWidget {
           if (left != null && !left.isNegative && sub.notice == null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text('Осталось ${_left(left)}', style: const TextStyle(color: _muted, fontSize: 13)),
+              child: Text('Осталось ${_left(left)}', style: TextStyle(color: _muted, fontSize: 13)),
             ),
           const SizedBox(height: 14),
           Row(
@@ -1170,7 +1198,7 @@ class _SubscriptionCard extends StatelessWidget {
                   onPressed: onBot,
                   style: FilledButton.styleFrom(
                     backgroundColor: _purple,
-                    foregroundColor: Colors.white,
+                    foregroundColor: palette.onAccent,
                     minimumSize: const Size.fromHeight(44),
                   ),
                   child: const Text('Продлить', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -1181,7 +1209,7 @@ class _SubscriptionCard extends StatelessWidget {
                 child: OutlinedButton(
                   onPressed: onBot,
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: _line),
+                    side: BorderSide(color: _line),
                     minimumSize: const Size.fromHeight(44),
                   ),
                   child: const Text('Поддержка', style: TextStyle(color: Colors.white)),
@@ -1234,6 +1262,66 @@ class _SettingsPageState extends State<SettingsPage> {
   Update? update;
   bool checking = false;
   String? checked;
+  final _taps = <DateTime>[]; // the secret: 7 taps on the version line within 3 s
+
+  void _versionTap() {
+    final now = DateTime.now();
+    _taps
+      ..add(now)
+      ..removeWhere((t) => now.difference(t) > const Duration(seconds: 3));
+    if (_taps.length < 7) return;
+    _taps.clear();
+    HapticFeedback.mediumImpact();
+    _secretField();
+  }
+
+  Future<void> _secretField() async {
+    final ctl = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('🤫'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (v) => Navigator.of(ctx).pop(v),
+          decoration: InputDecoration(
+            hintText: 'Код',
+            filled: true,
+            fillColor: _bg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: _line),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: _line),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('Отмена', style: TextStyle(color: _muted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(ctl.text),
+            child: Text('ОК', style: TextStyle(color: _purple)),
+          ),
+        ],
+      ),
+    );
+    ctl.dispose();
+    if (code == null || code.trim().isEmpty || !mounted) return;
+    final said = await runEgg(code);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(said ?? 'Ничего не произошло 👀')));
+  }
 
   @override
   void initState() {
@@ -1243,13 +1331,14 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _section(String title) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
-    child: Text(title, style: const TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
+    child: Text(title, style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
   );
 
   Widget _card(List<Widget> children) => Container(
     margin: const EdgeInsets.symmetric(horizontal: 16),
     decoration: BoxDecoration(
       color: _surface,
+      image: panelImage,
       borderRadius: BorderRadius.circular(16),
       border: Border.all(color: _line),
     ),
@@ -1259,7 +1348,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _radio<T>(String title, T value, T group, ValueChanged<T> onChanged, {String? subtitle}) => ListTile(
     onTap: () => setState(() => onChanged(value)),
     title: Text(title),
-    subtitle: subtitle == null ? null : Text(subtitle, style: const TextStyle(color: _muted, fontSize: 12)),
+    subtitle: subtitle == null ? null : Text(subtitle, style: TextStyle(color: _muted, fontSize: 12)),
     trailing: Icon(
       value == group ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
       color: value == group ? _green : _muted,
@@ -1270,7 +1359,7 @@ class _SettingsPageState extends State<SettingsPage> {
     value: value,
     onChanged: (v) => setState(() => onChanged(v)),
     title: Text(title),
-    subtitle: Text(subtitle, style: const TextStyle(color: _muted, fontSize: 12)),
+    subtitle: Text(subtitle, style: TextStyle(color: _muted, fontSize: 12)),
   );
 
   static const _protoHints = {
@@ -1318,11 +1407,11 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               onTap: Vpn.openSystemSettings,
               title: const Text('Постоянный VPN и блокировка без VPN'),
-              subtitle: const Text(
+              subtitle: Text(
                 'Системные настройки Android: «Постоянная VPN» и «Блокировать соединения без VPN»',
                 style: TextStyle(color: _muted, fontSize: 12),
               ),
-              trailing: const Icon(Icons.open_in_new_rounded, color: _muted, size: 20),
+              trailing: Icon(Icons.open_in_new_rounded, color: _muted, size: 20),
             ),
         ]),
         _section('DNS'),
@@ -1330,7 +1419,12 @@ class _SettingsPageState extends State<SettingsPage> {
         _section('ПРИЛОЖЕНИЕ'),
         _card([
           ListTile(
-            title: Text('NetKings $appVersion'),
+            // no ripple, no hint: the secret field opens after 7 quick taps
+            title: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _versionTap,
+              child: Text('NetKings $appVersion'),
+            ),
             subtitle: Text(
               update != null ? 'Доступна версия ${update!.version}' : (checked ?? 'Обновления проверяются сами'),
               style: TextStyle(color: update != null ? _green : _muted, fontSize: 12),
@@ -1341,7 +1435,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       if (!widget.embedded) Navigator.of(context).pop();
                       widget.onInstall();
                     },
-                    style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: Colors.white),
+                    style: FilledButton.styleFrom(backgroundColor: _purple, foregroundColor: palette.onAccent),
                     child: const Text('Обновить'),
                   )
                 : TextButton(
@@ -1360,7 +1454,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           },
                     child: checking
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Проверить', style: TextStyle(color: _purple)),
+                        : Text('Проверить', style: TextStyle(color: _purple)),
                   ),
           ),
         ]),
@@ -1410,7 +1504,7 @@ class _WelcomeState extends State<_Welcome> {
         style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
-      const Text(
+      Text(
         'Работает там, где другие не работают',
         textAlign: TextAlign.center,
         style: TextStyle(color: _muted, fontSize: 15),
@@ -1422,18 +1516,18 @@ class _WelcomeState extends State<_Welcome> {
         label: const Text('Получить доступ в боте', style: TextStyle(fontWeight: FontWeight.w600)),
         style: FilledButton.styleFrom(
           backgroundColor: _purple,
-          foregroundColor: Colors.white,
+          foregroundColor: palette.onAccent,
           minimumSize: const Size.fromHeight(52),
         ),
       ),
       const SizedBox(height: 10),
-      const Text(
+      Text(
         'Пробный период 3 дня — бесплатно. В боте нажми «📲 Открыть в NetKings».',
         textAlign: TextAlign.center,
         style: TextStyle(color: _muted, fontSize: 13),
       ),
       const SizedBox(height: 32),
-      const Text('УЖЕ ЕСТЬ ССЫЛКА?', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
+      Text('УЖЕ ЕСТЬ ССЫЛКА?', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
       const SizedBox(height: 10),
       TextField(
         controller: ctl,
@@ -1443,11 +1537,11 @@ class _WelcomeState extends State<_Welcome> {
           fillColor: _surface,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: _line),
+            borderSide: BorderSide(color: _line),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: _line),
+            borderSide: BorderSide(color: _line),
           ),
         ),
       ),
@@ -1455,7 +1549,7 @@ class _WelcomeState extends State<_Welcome> {
       OutlinedButton(
         onPressed: widget.busy ? null : () => widget.onLink(ctl.text),
         style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: _line),
+          side: BorderSide(color: _line),
           minimumSize: const Size.fromHeight(48),
         ),
         child: widget.busy
