@@ -55,3 +55,4 @@ app.*.map.json
 key.properties
 *.jks
 test/preview/out/
+test/preview/failures/
