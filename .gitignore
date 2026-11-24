@@ -54,3 +54,4 @@ app.*.map.json
 # signing key lives outside the repo (~/dev/keys)
 key.properties
 *.jks
+test/preview/out/

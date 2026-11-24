@@ -2,11 +2,18 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'src/appearance.dart';
+import 'src/idea.dart';
 import 'src/monitor.dart';
+import 'src/ping.dart';
+import 'src/power_button.dart';
 import 'src/secrets.dart';
 import 'src/settings.dart';
 import 'src/singbox.dart';
@@ -14,13 +21,15 @@ import 'src/subscription.dart';
 import 'src/update.dart';
 import 'src/vpn.dart';
 
-// colours come from the palette: an easter-egg look can take them from its picture (src/secrets.dart)
+// colours come from the palette (src/appearance.dart): theme, accent, wallpaper / easter-egg pictures
 Color get _bg => palette.bg;
 Color get _surface => palette.surface;
+Color get _high => palette.high;
 Color get _line => palette.line;
 Color get _purple => palette.accent;
 Color get _green => palette.accent2;
 Color get _muted => palette.muted;
+Color get _fg => palette.fg;
 const _red = Color(0xFFF0616D);
 LinearGradient get _brand =>
     LinearGradient(colors: [_green, _purple], begin: Alignment.topLeft, end: Alignment.bottomRight);
@@ -29,50 +38,113 @@ const _shopBot = 'https://t.me/NetKingsvpn_bot';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await loadEggs();
+  await loadAppearance();
+  LicenseRegistry.addLicense(() async* {
+    for (final (name, file) in [('Google Sans Flex', 'GoogleSansFlex'), ('Nunito', 'Nunito')]) {
+      yield LicenseEntryWithLineBreaks([name], await rootBundle.loadString('assets/fonts/$file-OFL.txt'));
+    }
+  });
   runApp(const NetKingsApp());
 }
 
-class NetKingsApp extends StatelessWidget {
+/// Material 3 theme for [b] from the user's appearance: colours, font (bold + rounded by default).
+ThemeData appTheme(Brightness b) {
+  final s = schemeFor(b);
+  final base = ThemeData(
+    colorScheme: s,
+    useMaterial3: true,
+    fontFamily: fontFamily,
+    fontFamilyFallback: fontFallback,
+    brightness: b,
+  );
+  final bold = boldText, v = fontVariations;
+  TextStyle? f(TextStyle? t, FontWeight w) => t?.copyWith(fontVariations: v, fontWeight: bold ? w : null);
+  final t = base.textTheme;
+  final text = t.copyWith(
+    displayLarge: f(t.displayLarge, FontWeight.w700),
+    displayMedium: f(t.displayMedium, FontWeight.w700),
+    displaySmall: f(t.displaySmall, FontWeight.w700),
+    headlineLarge: f(t.headlineLarge, FontWeight.w800),
+    headlineMedium: f(t.headlineMedium, FontWeight.w800),
+    headlineSmall: f(t.headlineSmall, FontWeight.w800),
+    titleLarge: f(t.titleLarge, FontWeight.w800),
+    titleMedium: f(t.titleMedium, FontWeight.w700),
+    titleSmall: f(t.titleSmall, FontWeight.w700),
+    bodyLarge: f(t.bodyLarge, FontWeight.w600),
+    bodyMedium: f(t.bodyMedium, FontWeight.w600),
+    bodySmall: f(t.bodySmall, FontWeight.w500),
+    labelLarge: f(t.labelLarge, FontWeight.w700),
+    labelMedium: f(t.labelMedium, FontWeight.w600),
+    labelSmall: f(t.labelSmall, FontWeight.w600),
+  );
+  return base.copyWith(
+    scaffoldBackgroundColor: look.value != null ? Colors.transparent : s.surface,
+    textTheme: text,
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: s.inverseSurface,
+      contentTextStyle: text.bodyMedium?.copyWith(color: s.onInverseSurface),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    ),
+    // Material Symbols a bit heavier, to sit with the bold text
+    iconTheme: IconThemeData(color: s.onSurfaceVariant, weight: 500, opticalSize: 24),
+    dialogTheme: DialogThemeData(backgroundColor: s.surfaceContainerHigh),
+    popupMenuTheme: PopupMenuThemeData(color: s.surfaceContainerHigh),
+  );
+}
+
+class NetKingsApp extends StatefulWidget {
   const NetKingsApp({super.key});
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<Look?>(
-    valueListenable: look,
-    builder: (context, on, _) => MaterialApp(
-      title: 'NetKings VPN',
-      debugShowCheckedModeBanner: false,
-      builder: (context, child) {
-        final w = wallpaper;
-        return w == null
-            ? child!
-            : Stack(
-                fit: StackFit.expand,
-                children: [
-                  ColoredBox(color: _bg, child: w),
-                  child!,
-                ],
-              );
-      },
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: on != null ? Colors.transparent : _bg,
-        colorScheme: ColorScheme.dark(primary: _purple, secondary: _green, surface: _surface, error: _red),
-        switchTheme: SwitchThemeData(
-          thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.white : _muted),
-          trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _purple : _line),
-        ),
-        radioTheme: RadioThemeData(
-          fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? _green : _muted),
-        ),
-        snackBarTheme: SnackBarThemeData(
-          backgroundColor: _surface,
-          contentTextStyle: TextStyle(color: Colors.white),
-        ),
-        fontFamily: 'Roboto',
-        useMaterial3: true,
-      ),
-      home: const Home(),
-    ),
+  State<NetKingsApp> createState() => _NetKingsAppState();
+}
+
+class _NetKingsAppState extends State<NetKingsApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // theme "Авто": the phone switched light / dark
+  @override
+  void didChangePlatformBrightness() {
+    if (appearance.value.mode == 'system') colorsVersion.value++;
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([look, appearance, colorsVersion]),
+    builder: (context, _) {
+      final b = brightness;
+      return MaterialApp(
+        title: 'NetKings VPN',
+        debugShowCheckedModeBanner: false,
+        builder: (context, child) {
+          final w = wallpaper;
+          return w == null
+              ? child!
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ColoredBox(color: _bg, child: w),
+                    child!,
+                  ],
+                );
+        },
+        theme: appTheme(Brightness.light),
+        darkTheme: appTheme(Brightness.dark),
+        themeMode: b == Brightness.light ? ThemeMode.light : ThemeMode.dark,
+        home: const Home(),
+      );
+    },
   );
 }
 
@@ -97,6 +169,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   bool testing = false;
   bool collapsed = false; // home: the server list folded to one row (the server in use)
   int tab = 0; // bottom bar: 0 home, 1 servers, 2 settings
+  bool editing = false; // the home screen's edit mode: blocks are moved / hidden right on it
   Settings? _settingsBefore; // settings as they were when the settings tab was opened
   bool loading = true, refreshing = false;
   // the watchdog gave up on the picked protocol / country / server: a wider pick until the user connects again
@@ -110,6 +183,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     vpn.addListener(_onVpn);
     look.addListener(_onEgg);
+    appearance.addListener(_onEgg);
+    colorsVersion.addListener(_onEgg);
     Vpn.onLink(_importLink);
     _init();
   }
@@ -127,6 +202,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       await _importLink(link);
     } else if (sub != null) {
       unawaited(_refresh(silent: true));
+      if (isDirectPing(settings.pingMethod)) unawaited(_testPings());
       if (settings.autoConnect && vpn.state == VpnState.stopped) unawaited(_toggle());
     }
   }
@@ -172,6 +248,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       monitor =
           Monitor(
               _secret,
+              pingMethod: settings.pingMethod,
+              entryOf: _entryOf,
               autoSwitch: settings.autoSwitch,
               onSwitch: _onSwitch,
               onDead: _onDead,
@@ -185,7 +263,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     } else if (vpn.state == VpnState.stopped && monitor != null) {
       monitor!.dispose();
       monitor = null;
-      pings = {}; // numbers from the tunnel are meaningless without it: "—" until the next connect
+      // numbers from the tunnel are meaningless without it: "—" until the next connect (direct ones stay)
+      if (!isDirectPing(settings.pingMethod)) pings = {};
     }
     setState(() {});
   }
@@ -282,6 +361,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   Future<void> _toggle() async {
     final s = sub;
     if (s == null) return;
+    if (appearance.value.haptics) HapticFeedback.mediumImpact();
     if (vpn.state == VpnState.started || vpn.state == VpnState.starting) {
       await vpn.stop();
       return;
@@ -344,22 +424,46 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     if (!v && monitor != null && pings.isEmpty) unawaited(_testPings());
   }
 
-  /// Connected: a real request through every server (the core's delay test). Not connected: TCP connect
-  /// time to each entry (shows only that the entry is reachable).
-  /// Only while connected: a real request through every server (the core's delay test). Without the core
-  /// a direct check would measure only the way to the entry — or to another VPN app's tunnel (fake "6 ms").
+  /// The entry server (host, port) a server connects to.
+  (String, int)? _entryOf(String leaf) {
+    final o = _outboundsByTag[leaf];
+    final h = o?['server'], port = o?['server_port'];
+    return h is String && port is int ? (h, port) : null;
+  }
+
+  /// Pings for the server list. TCP / ICMP go straight to each server, so they work before connecting too
+  /// (another VPN app being on makes them meaningless — the user picked them). The other ways need the core:
+  /// a real request through every server (its delay test).
   Future<void> _testPings() async {
     final m = monitor;
-    if (testing || m == null) return;
+    final method = settings.pingMethod;
+    final direct = isDirectPing(method);
+    if (testing || (m == null && !direct)) return;
     setState(() => testing = true);
-    final r = await m.testServers(_leaves);
+    final Map<String, int?> r;
+    if (direct) {
+      final tags = _leaves;
+      final byHost = <String, Future<int?>>{}; // one ICMP ping per entry address, not per server
+      final res = await Future.wait([
+        for (final t in tags)
+          switch (_entryOf(t)) {
+            null => Future.value(null),
+            final e => method == 'icmp' ? byHost.putIfAbsent(e.$1, () => icmpPing(e.$1)) : tcpPingMedian(e.$1, e.$2),
+          },
+      ]);
+      r = {for (var i = 0; i < tags.length; i++) tags[i]: res[i]};
+    } else {
+      r = await m!.testServers(_leaves, {for (final l in _leaves) l: leafPingPort(sub!, l)});
+    }
     if (mounted) {
       setState(() {
-        if (monitor == m) pings = r; // disconnected meanwhile: keep "—"
+        if (direct || monitor == m) pings = r; // disconnected meanwhile: keep "—"
         testing = false;
       });
     }
   }
+
+  bool get _canPing => !testing && (monitor != null || isDirectPing(settings.pingMethod));
 
   Future<void> _goTab(int i) async {
     if (i == tab) return;
@@ -378,11 +482,16 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     if (!settings.sameCore(before)) {
       _protoFallback = false;
       await _restart();
-    } else if (settings.autoSwitch != before.autoSwitch && monitor != null) {
-      // the watchdog reads the flag at start: renew it
+    } else if ((settings.autoSwitch != before.autoSwitch || settings.pingMethod != before.pingMethod) &&
+        monitor != null) {
+      // the watchdog reads these at start: renew it
       monitor!.dispose();
       monitor = null;
       _onVpn();
+    }
+    if (settings.pingMethod != before.pingMethod) {
+      pings = {};
+      if (_canPing) unawaited(_testPings());
     }
     setState(() {});
   }
@@ -401,6 +510,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     vpn.removeListener(_onVpn);
     look.removeListener(_onEgg);
+    appearance.removeListener(_onEgg);
+    colorsVersion.removeListener(_onEgg);
     monitor?.dispose();
     vpn.dispose();
     super.dispose();
@@ -418,9 +529,10 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       );
     }
     return PopScope(
-      canPop: tab == 0, // Android back: to the home tab first
+      canPop: tab == 0 && !editing, // Android back: out of the edit mode / to the home tab first
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _goTab(0);
+        if (didPop) return;
+        editing ? setState(() => editing = false) : _goTab(0);
       },
       child: Scaffold(
         body: SafeArea(
@@ -442,6 +554,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                 1 => _serversTab(s),
                 2 => SettingsPage(
                   settings: settings,
+                  subUrl: s.url,
                   embedded: true,
                   update: update,
                   onCheckUpdate: () async {
@@ -452,20 +565,51 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                     _goTab(0);
                     _install();
                   },
+                  onEditHome: () async {
+                    await _goTab(0);
+                    if (mounted) setState(() => editing = true);
+                  },
                 ),
-                _ => _main(s),
+                _ => editing ? _editMain(s) : _main(s),
               },
             ),
           ),
         ),
-        bottomNavigationBar: _NavBar(index: tab, onTap: _goTab),
+        bottomNavigationBar: editing ? null : _NavBar(index: tab, onTap: _goTab),
       ),
     );
   }
 
-  Widget _main(Subscription s) {
+  bool get _on => vpn.state == VpnState.started;
+
+  Widget _header() => Row(
+    children: [
+      Image.asset('assets/icon/icon.png', width: 30, height: 30, filterQuality: FilterQuality.medium),
+      SizedBox(width: 10),
+      Text('NetKings', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: .2)),
+      SizedBox(width: 12),
+      // speed on the title's line, pushed to the right
+      Expanded(
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: _SpeedBar(monitor: _on ? monitor : null),
+          ),
+        ),
+      ),
+      PopupMenuButton<String>(
+        icon: Icon(Symbols.more_vert_rounded, color: _muted),
+        color: _surface,
+        onSelected: (v) => v == 'logout' ? _logout() : null,
+        itemBuilder: (_) => [PopupMenuItem(value: 'logout', child: Text('Другая подписка'))],
+      ),
+    ],
+  );
+
+  /// One movable block of the home screen; [preview] = inside the edit mode (the server list folded).
+  Widget _block(Subscription s, String id, {bool preview = false}) {
     final st = vpn.state;
-    final on = st == VpnState.started;
     final busy = st == VpnState.starting || st == VpnState.stopping;
     final statusText = switch (st) {
       VpnState.started => 'Подключено',
@@ -473,104 +617,198 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       VpnState.stopping => 'Отключаю…',
       VpnState.stopped => 'Не подключено',
     };
+    return switch (id) {
+      'power' => _powerBlock(s, st, _on, busy, statusText),
+      'servers' => _serversBlock(preview: preview),
+      _ => _SubscriptionCard(sub: s, onBot: () => _open(s.bot.isNotEmpty ? s.bot : _shopBot)),
+    };
+  }
+
+  Widget _main(Subscription s) {
     return RefreshIndicator(
       onRefresh: _refresh,
       color: _purple,
       child: ListView(
         padding: EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
-          Row(
-            children: [
-              Image.asset('assets/icon/icon.png', width: 30, height: 30, filterQuality: FilterQuality.medium),
-              SizedBox(width: 10),
-              Text('NetKings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: .3)),
-              Spacer(),
-              IconButton(
-                tooltip: 'Обновить подписку',
-                onPressed: refreshing ? null : _refresh,
-                icon: refreshing
-                    ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : Icon(Icons.refresh_rounded, color: _muted),
-              ),
-              PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert_rounded, color: _muted),
-                color: _surface,
-                onSelected: (v) => v == 'logout' ? _logout() : null,
-                itemBuilder: (_) => [PopupMenuItem(value: 'logout', child: Text('Другая подписка'))],
-              ),
-            ],
-          ),
+          _header(),
           if (update != null) ...[
             SizedBox(height: 12),
             _UpdateCard(update: update!, progress: updateProgress, onInstall: _install),
           ],
-          SizedBox(height: 32),
-          Center(
-            child: _PowerButton(on: on, busy: busy, onTap: busy ? null : _toggle),
-          ),
-          SizedBox(height: 20),
-          Center(
-            child: AnimatedSwitcher(
-              duration: Duration(milliseconds: 300),
-              child: Text(
-                statusText,
-                key: ValueKey(statusText),
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: on ? _green : Colors.white),
-              ),
-            ),
-          ),
-          SizedBox(height: 6),
-          Center(
-            child: Text(
-              on ? _onLabel(s) : 'Нажми, чтобы подключиться',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: _muted, fontSize: 14),
-            ),
-          ),
-          SizedBox(height: 16),
-          _StatsBar(monitor: on ? monitor : null),
-          SizedBox(height: 24),
-          Row(
-            children: [
-              InkWell(
-                onTap: _toggleCollapsed,
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    children: [
-                      Text('СЕРВЕРЫ', style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
-                      Icon(collapsed ? Icons.expand_more_rounded : Icons.expand_less_rounded, color: _muted, size: 20),
-                    ],
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Проверить пинг',
-                visualDensity: VisualDensity.compact,
-                onPressed: testing || monitor == null ? null : _testPings,
-                icon: testing
-                    ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : Icon(Icons.speed_rounded, color: _muted, size: 20),
-              ),
-              Spacer(),
-              Text('Автовыбор', style: TextStyle(fontSize: 14)),
-              SizedBox(width: 4),
-              Switch(value: autoPick, onChanged: _setAutoPick),
+          // the blocks in the order the user set in the edit mode
+          for (final id in appearance.value.blocks)
+            if (id == 'power' || !appearance.value.hidden.contains(id)) ...[
+              SizedBox(height: id == 'power' ? 28 : 20),
+              _block(s, id),
             ],
-          ),
-          SizedBox(height: 4),
-          AnimatedSize(
-            duration: Duration(milliseconds: 200),
-            alignment: Alignment.topCenter,
-            child: Column(children: collapsed ? [_currentRow()] : _serverRows()),
-          ),
-          SizedBox(height: 24),
-          _SubscriptionCard(sub: s, onBot: () => _open(s.bot.isNotEmpty ? s.bot : _shopBot)),
           if (message != null) ...[SizedBox(height: 16), Text(message!, style: TextStyle(color: _red, fontSize: 14))],
         ],
       ),
     );
+  }
+
+  /// Edit mode: the real blocks (a live preview) in a reorderable list, gently jiggling.
+  Widget _editMain(Subscription s) => _HomeEditor(
+    header: _header(),
+    build: (id) => _block(s, id, preview: true),
+    onDone: () => setState(() => editing = false),
+  );
+
+  Widget _powerBlock(Subscription s, VpnState st, bool on, bool busy, String statusText) => Column(
+    children: [
+      // holding the button 1.5 s turns «Автовыбор» on (a tap still connects / disconnects: the long press
+      // wins the gesture only when the finger stays that long)
+      RawGestureDetector(
+        gestures: {
+          LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+            () => LongPressGestureRecognizer(duration: const Duration(milliseconds: 1500)),
+            (r) => r.onLongPress = _holdAutoPick,
+          ),
+        },
+        child: PowerButton(
+          style: appearance.value.button,
+          on: on,
+          busy: busy,
+          stopping: st == VpnState.stopping,
+          onTap: busy ? null : _toggle,
+        ),
+      ),
+      SizedBox(height: 20),
+      AnimatedSwitcher(
+        duration: Duration(milliseconds: 300),
+        child: Text(
+          statusText,
+          key: ValueKey(statusText),
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: on ? _green : _fg),
+        ),
+      ),
+      SizedBox(height: 6),
+      Text(
+        on
+            ? _onLabel(s)
+            : (appearance.value.button == 'slide' ? 'Проведи, чтобы подключиться' : 'Нажми, чтобы подключиться'),
+        textAlign: TextAlign.center,
+        style: TextStyle(color: _muted, fontSize: 14),
+      ),
+      if (!autoPick) ...[
+        SizedBox(height: 2),
+        Text(
+          'Зажми кнопку, чтобы вернуть автовыбор',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted.withValues(alpha: .7), fontSize: 12),
+        ),
+      ],
+    ],
+  );
+
+  Widget _serversBlock({bool preview = false}) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Row(
+        children: [
+          InkWell(
+            onTap: _toggleCollapsed,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+              child: Row(
+                children: [
+                  Text(
+                    'Серверы',
+                    style: TextStyle(color: _fg, fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Icon(collapsed ? Symbols.expand_more_rounded : Symbols.expand_less_rounded, color: _muted, size: 22),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Обновить подписку',
+            visualDensity: VisualDensity.compact,
+            onPressed: refreshing ? null : _refresh,
+            icon: refreshing
+                ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(Symbols.sync_rounded, color: _muted, size: 20),
+          ),
+          IconButton(
+            tooltip: 'Проверить пинг',
+            visualDensity: VisualDensity.compact,
+            onPressed: _canPing ? _testPings : null,
+            icon: testing
+                ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(Symbols.speed_rounded, color: _muted, size: 20),
+          ),
+          Spacer(),
+          _pingChip(),
+        ],
+      ),
+      SizedBox(height: 4),
+      AnimatedSize(
+        duration: Duration(milliseconds: 200),
+        alignment: Alignment.topCenter,
+        child: Column(children: collapsed || preview ? [_currentRow()] : _serverRows()),
+      ),
+    ],
+  );
+
+  /// Holding the connect button: «Автовыбор» back on.
+  Future<void> _holdAutoPick() async {
+    HapticFeedback.heavyImpact();
+    if (autoPick) {
+      _toast('Автовыбор уже включён');
+      return;
+    }
+    await _setAutoPick(true);
+    if (mounted) _toast('Автовыбор включён — подключаюсь к самому быстрому серверу');
+  }
+
+  /// The ping of the server in use (connected) or of the picked one (TCP / ICMP before connecting), as a
+  /// small chip in the servers' header; NK Ping also shows its parts.
+  Widget _pingChip() {
+    final m = monitor;
+    String? text, parts;
+    Color color = _muted;
+    if (m != null) {
+      if (m.ping == null && m.misses < 2) return SizedBox.shrink();
+      text = _pingText(m);
+      color = _pingColor(m);
+      if (m.misses == 0 && m.ping != null && m.pingToServer != null) {
+        final r = PingResult(m.ping!, m.pingToServer);
+        parts = '${r.toServer} + ${r.beyond}';
+      }
+    } else if (_manual && pings.containsKey(server)) {
+      final p = pings[server];
+      text = p == null ? 'нет ответа' : '$p мс';
+      color = p == null ? _red : _green;
+    }
+    if (text == null) return SizedBox.shrink();
+    final chip = AnimatedContainer(
+      duration: Duration(milliseconds: 250),
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(color: color.withValues(alpha: .16), borderRadius: BorderRadius.circular(12)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Symbols.network_ping_rounded, size: 16, color: color),
+          SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w800),
+          ),
+          if (parts != null) ...[SizedBox(width: 6), Text(parts, style: TextStyle(color: _muted, fontSize: 12))],
+        ],
+      ),
+    );
+    return parts == null
+        ? chip
+        : Tooltip(
+            // NK Ping: where the time goes — the user's own internet or the VPN
+            message:
+                '${m!.pingToServer} мс — от тебя до сервера (твой интернет)\n${PingResult(m.ping!, m.pingToServer).beyond} мс — дальше по VPN до сайта',
+            triggerMode: TooltipTriggerMode.tap,
+            child: chip,
+          );
   }
 
   Map<String, Map> get _outboundsByTag => {for (final o in sub?.outbounds ?? []) '${o['tag']}': o as Map};
@@ -592,10 +830,10 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
               Spacer(),
               IconButton(
                 tooltip: 'Проверить пинг',
-                onPressed: testing || monitor == null ? null : _testPings,
+                onPressed: _canPing ? _testPings : null,
                 icon: testing
                     ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : Icon(Icons.speed_rounded, color: _muted),
+                    : Icon(Symbols.speed_rounded, color: _muted),
               ),
             ],
           ),
@@ -604,7 +842,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
             child: Text(
               autoPick
                   ? 'Сейчас включён автовыбор. Нажми на сервер — буду подключаться только к нему.'
-                  : 'Подключаюсь только к выбранному серверу. Вернуть автовыбор — переключатель на главной.',
+                  : 'Подключаюсь только к выбранному серверу. Вернуть автовыбор — зажми кнопку подключения на главной.',
               style: TextStyle(color: _muted, fontSize: 13),
             ),
           ),
@@ -633,6 +871,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
         selected: false,
         inUse: false,
         tested: false,
+        showPing: false,
         onTap: _toggleCollapsed,
       );
     }
@@ -647,13 +886,16 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       inUse: live != null,
       tested: tested,
       ping: ping,
+      showPing: false, // the chip in the header shows it
       onTap: _toggleCollapsed,
     );
   }
 
   /// Every server, Incy style. Автовыбор on: the one the core uses has a green dot; a tap = that server only.
+  /// The server in use shows the live ping (the same number as the chip); the others the last list test.
   List<Widget> _serverRows() {
-    final on = monitor != null;
+    final m = monitor;
+    final live = m != null && m.ping != null && m.misses < 2 ? m.ping : null;
     final obs = _outboundsByTag;
     return [
       for (final l in _leaves)
@@ -662,9 +904,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
           title: _leafName(l),
           parts: _protoParts(obs[l]),
           selected: _manual && server == l,
-          inUse: on && monitor!.leaf == l,
-          tested: pings.containsKey(l),
-          ping: pings[l],
+          inUse: m?.leaf == l,
+          tested: (m?.leaf == l && live != null) || pings.containsKey(l),
+          ping: m?.leaf == l && live != null ? live : pings[l],
           onTap: () => _pickServer(l),
         ),
     ];
@@ -751,49 +993,36 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   }
 }
 
-class _StatsBar extends StatelessWidget {
+/// Download / upload speed: two small chips on the header line.
+class _SpeedBar extends StatelessWidget {
   final Monitor? monitor;
-  const _StatsBar({this.monitor});
+  const _SpeedBar({this.monitor});
 
   @override
   Widget build(BuildContext context) {
     final m = monitor;
-    Widget cell(IconData icon, String label, String value, Color color) => Expanded(
-      child: Column(
+    Widget chip(IconData icon, String value, Color color) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: _surface, image: panelImage, borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 14, color: color),
-              SizedBox(width: 4),
-              Text(label, style: TextStyle(color: _muted, fontSize: 12)),
-            ],
-          ),
-          SizedBox(height: 4),
+          Icon(icon, size: 16, color: m == null ? _muted : color),
+          const SizedBox(width: 4),
           Text(
             value,
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: m == null ? _muted : Colors.white),
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: m == null ? _muted : _fg),
           ),
         ],
       ),
     );
-    return Container(
-      padding: EdgeInsets.symmetric(vertical: 12),
-      decoration: BoxDecoration(
-        color: _surface,
-        image: panelImage,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _line),
-      ),
-      child: Row(
-        children: [
-          cell(Icons.south_rounded, 'Загрузка', m == null ? '—' : formatSpeed(m.down), _green),
-          Container(width: 1, height: 32, color: _line),
-          cell(Icons.north_rounded, 'Отдача', m == null ? '—' : formatSpeed(m.up), _purple),
-          Container(width: 1, height: 32, color: _line),
-          cell(Icons.network_ping_rounded, 'Пинг', _pingText(m), _pingColor(m)),
-        ],
-      ),
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        chip(Symbols.arrow_downward_rounded, m == null ? '—' : formatSpeed(m.down), _green),
+        const SizedBox(width: 6),
+        chip(Symbols.arrow_upward_rounded, m == null ? '—' : formatSpeed(m.up), _purple),
+      ],
     );
   }
 }
@@ -814,6 +1043,174 @@ Color _pingColor(Monitor? m) {
   return ping < 400 ? _green : (ping < 1000 ? _purple : _red);
 }
 
+/// The home screen's edit mode: its real blocks (so it is a live preview) in a reorderable list. Blocks jiggle
+/// a little; the one being dragged lifts (bigger, with a shadow) and the others slide out of its way. Drag by
+/// the name chip (or a long press anywhere on a block), the eye hides / shows a block. Saved at once.
+class _HomeEditor extends StatefulWidget {
+  final Widget header;
+  final Widget Function(String id) build;
+  final VoidCallback onDone;
+  const _HomeEditor({required this.header, required this.build, required this.onDone});
+
+  @override
+  State<_HomeEditor> createState() => _HomeEditorState();
+}
+
+class _HomeEditorState extends State<_HomeEditor> with SingleTickerProviderStateMixin {
+  late final _jiggle = AnimationController(vsync: this, duration: const Duration(milliseconds: 260))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _jiggle.dispose();
+    super.dispose();
+  }
+
+  Appearance get _a => appearance.value;
+
+  Future<void> _set(void Function(Appearance a) change) async {
+    final a = _a.copy();
+    change(a);
+    await saveAppearance(a);
+    if (mounted) setState(() {});
+  }
+
+  Widget _frame(String id, int i) {
+    final hidden = _a.hidden.contains(id);
+    return Padding(
+      key: ValueKey(id),
+      padding: const EdgeInsets.only(bottom: 14),
+      child: AnimatedBuilder(
+        animation: _jiggle,
+        // neighbours tilt the other way, like icons on a phone's home screen in edit mode
+        builder: (context, child) =>
+            Transform.rotate(angle: (i.isEven ? 1 : -1) * (_jiggle.value - .5) * .008, child: child),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 250),
+          opacity: hidden ? .45 : 1,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 14),
+            decoration: BoxDecoration(
+              color: _purple.withValues(alpha: .07),
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: _purple.withValues(alpha: hidden ? .25 : .6), width: 1.5),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    ReorderableDragStartListener(
+                      index: i,
+                      child: Container(
+                        padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
+                        decoration: BoxDecoration(color: _high, borderRadius: BorderRadius.circular(14)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Symbols.drag_indicator_rounded, size: 18, color: _fg),
+                            const SizedBox(width: 4),
+                            Text(blockNames[id]!, style: TextStyle(fontSize: 13, color: _fg)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    if (hidden)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Text('скрыт', style: TextStyle(color: _muted, fontSize: 12)),
+                      ),
+                    if (id == 'power')
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Icon(Symbols.lock_rounded, size: 18, color: _muted),
+                      )
+                    else
+                      IconButton.filledTonal(
+                        tooltip: hidden ? 'Показать' : 'Скрыть',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () {
+                          HapticFeedback.selectionClick();
+                          _set((a) => hidden ? a.hidden.remove(id) : a.hidden.add(id));
+                        },
+                        icon: Icon(hidden ? Symbols.visibility_off_rounded : Symbols.visibility_rounded, size: 20),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                // a preview: nothing inside reacts to taps while editing
+                IgnorePointer(child: widget.build(id)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Padding(padding: const EdgeInsets.fromLTRB(20, 12, 20, 0), child: widget.header),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 12, 6),
+        child: Row(
+          children: [
+            Icon(Symbols.edit_rounded, color: _purple, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('Режим редактирования', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            ),
+            TextButton(
+              onPressed: () => _set((a) {
+                a.blocks = blockNames.keys.toList();
+                a.hidden = {};
+              }),
+              child: const Text('Сбросить'),
+            ),
+            FilledButton(onPressed: widget.onDone, child: const Text('Готово')),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+        child: Text(
+          'Перетаскивай блоки за название, глаз — скрыть или показать',
+          style: TextStyle(color: _muted, fontSize: 12),
+        ),
+      ),
+      Expanded(
+        child: ReorderableListView(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+          buildDefaultDragHandles: false,
+          onReorderStart: (_) => HapticFeedback.mediumImpact(),
+          onReorderItem: (from, to) => _set((a) => a.blocks.insert(to, a.blocks.removeAt(from))),
+          // the dragged block lifts: a little bigger, a coloured shadow
+          proxyDecorator: (child, _, anim) => AnimatedBuilder(
+            animation: anim,
+            builder: (context, c) {
+              final t = Curves.easeOutBack.transform(anim.value);
+              return Transform.scale(
+                scale: 1 + .04 * t,
+                child: Material(
+                  color: Colors.transparent,
+                  elevation: 14 * anim.value,
+                  shadowColor: _purple.withValues(alpha: .6),
+                  borderRadius: BorderRadius.circular(28),
+                  child: c,
+                ),
+              );
+            },
+            child: child,
+          ),
+          children: [for (var i = 0; i < _a.blocks.length; i++) _frame(_a.blocks[i], i)],
+        ),
+      ),
+    ],
+  );
+}
+
 class _UpdateCard extends StatelessWidget {
   final Update update;
   final double? progress;
@@ -823,20 +1220,16 @@ class _UpdateCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: EdgeInsets.fromLTRB(16, 12, 12, 12),
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: _purple.withValues(alpha: .6)),
-      color: _purple.withValues(alpha: .10),
-    ),
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(24), color: _purple.withValues(alpha: .16)),
     child: Row(
       children: [
-        Icon(Icons.system_update_rounded, color: _green),
+        Icon(Symbols.system_update_rounded, color: _green),
         SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Доступна версия ${update.version}', style: TextStyle(fontWeight: FontWeight.w600)),
+              Text('Доступна версия ${update.version}', style: TextStyle(fontWeight: FontWeight.w800)),
               SizedBox(height: 2),
               progress == null
                   ? Text('У тебя $appVersion', style: TextStyle(color: _muted, fontSize: 13))
@@ -857,114 +1250,6 @@ class _UpdateCard extends StatelessWidget {
   );
 }
 
-class _PowerButton extends StatefulWidget {
-  final bool on, busy;
-  final VoidCallback? onTap;
-  const _PowerButton({required this.on, required this.busy, this.onTap});
-
-  @override
-  State<_PowerButton> createState() => _PowerButtonState();
-}
-
-/// Connected: the glow slowly breathes. Connecting: it pulses faster. A press shrinks the button a little.
-class _PowerButtonState extends State<_PowerButton> with SingleTickerProviderStateMixin {
-  late final _pulse = AnimationController(vsync: this, duration: Duration(milliseconds: 2400));
-  bool _pressed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(_PowerButton old) {
-    super.didUpdateWidget(old);
-    _sync();
-  }
-
-  void _sync() {
-    final d = Duration(milliseconds: widget.busy ? 900 : 2400);
-    if (widget.on || widget.busy) {
-      if (_pulse.duration != d || !_pulse.isAnimating) {
-        _pulse.duration = d;
-        _pulse.repeat(reverse: true);
-      }
-    } else if (_pulse.isAnimating || _pulse.value != 0) {
-      _pulse.stop();
-      _pulse.animateTo(0, duration: Duration(milliseconds: 300));
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final on = widget.on, busy = widget.busy;
-    final glow = on ? _green : _purple;
-    return GestureDetector(
-      onTap: widget.onTap,
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) => setState(() => _pressed = false),
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? .94 : 1,
-        duration: Duration(milliseconds: 120),
-        child: AnimatedBuilder(
-          animation: _pulse,
-          builder: (context, child) {
-            final t = Curves.easeInOut.transform(_pulse.value);
-            return AnimatedContainer(
-              duration: Duration(milliseconds: 300),
-              width: 184,
-              height: 184,
-              padding: EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: on ? _brand : null,
-                color: on ? null : _purple.withValues(alpha: .55),
-                boxShadow: [
-                  BoxShadow(
-                    color: glow.withValues(alpha: (on ? .28 : .14) + .17 * t),
-                    blurRadius: (on ? 40 : 24) + 22 * t,
-                    spreadRadius: 2 + 4 * t,
-                  ),
-                ],
-              ),
-              child: child,
-            );
-          },
-          child: Container(
-            decoration: BoxDecoration(shape: BoxShape.circle, color: _surface, image: panelImage),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                if (busy)
-                  SizedBox(width: 170, height: 170, child: CircularProgressIndicator(strokeWidth: 3, color: glow)),
-                AnimatedSwitcher(
-                  duration: Duration(milliseconds: 300),
-                  transitionBuilder: (child, a) => ScaleTransition(scale: a, child: child),
-                  child: on
-                      ? ShaderMask(
-                          key: ValueKey('on'),
-                          shaderCallback: (r) => _brand.createShader(r),
-                          child: Icon(Icons.power_settings_new_rounded, size: 76, color: Colors.white),
-                        )
-                      : Icon(Icons.power_settings_new_rounded, key: ValueKey('off'), size: 76, color: _purple),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 List<Color> get _protoColors => [const Color(0xFF6EA8FE), _muted, const Color(0xFFC6E36B)];
 
 /// One server, Incy style: flag tile, name, coloured protocol line, ping on the right.
@@ -973,6 +1258,7 @@ class _ServerRow extends StatelessWidget {
   final List<String> parts;
   final String? subtitle; // instead of the protocol line
   final bool selected, inUse, tested;
+  final bool showPing;
   final int? ping;
   final VoidCallback onTap;
   const _ServerRow({
@@ -984,6 +1270,7 @@ class _ServerRow extends StatelessWidget {
     required this.inUse,
     required this.tested,
     this.ping,
+    this.showPing = true,
     required this.onTap,
   });
 
@@ -994,16 +1281,16 @@ class _ServerRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 8),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(selected ? 28 : 20),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
           padding: const EdgeInsets.fromLTRB(10, 10, 16, 10),
+          // Material 3 Expressive: the picked server is tonal and rounder
           decoration: BoxDecoration(
-            color: selected ? _purple.withValues(alpha: .16) : _surface,
+            color: selected ? Color.alphaBlend(_purple.withValues(alpha: .22), _surface) : _surface,
             image: panelImage,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: selected ? _purple : _line),
+            borderRadius: BorderRadius.circular(selected ? 28 : 20),
           ),
           child: Row(
             children: [
@@ -1011,7 +1298,7 @@ class _ServerRow extends StatelessWidget {
                 width: 46,
                 height: 46,
                 alignment: Alignment.center,
-                decoration: BoxDecoration(color: _bg, borderRadius: BorderRadius.circular(12)),
+                decoration: BoxDecoration(color: _high, borderRadius: BorderRadius.circular(14)),
                 child: Text(
                   flag,
                   style: TextStyle(
@@ -1031,7 +1318,7 @@ class _ServerRow extends StatelessWidget {
                           child: Text(
                             title,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                           ),
                         ),
                         if (inUse)
@@ -1068,22 +1355,23 @@ class _ServerRow extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                transitionBuilder: (child, a) => FadeTransition(
-                  opacity: a,
-                  child: ScaleTransition(scale: Tween(begin: .8, end: 1.0).animate(a), child: child),
-                ),
-                child: Text(
-                  !tested ? '—' : (p == null ? 'n/a' : '$p мс'),
-                  key: ValueKey('$tested$p'),
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: !tested ? _muted : (p == null ? _red : (p < 700 ? _green : (p < 1500 ? _purple : _red))),
+              if (showPing) const SizedBox(width: 8),
+              if (showPing)
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  transitionBuilder: (child, a) => FadeTransition(
+                    opacity: a,
+                    child: ScaleTransition(scale: Tween(begin: .8, end: 1.0).animate(a), child: child),
+                  ),
+                  child: Text(
+                    !tested ? '—' : (p == null ? 'n/a' : '$p мс'),
+                    key: ValueKey('$tested$p'),
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: !tested ? _muted : (p == null ? _red : (p < 700 ? _green : (p < 1500 ? _purple : _red))),
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
@@ -1098,51 +1386,29 @@ class _NavBar extends StatelessWidget {
   const _NavBar({required this.index, required this.onTap});
 
   static const _items = [
-    (Icons.home_rounded, 'Главная'),
-    (Icons.dns_rounded, 'Серверы'),
-    (Icons.tune_rounded, 'Настройки'),
+    (Symbols.home_rounded, Symbols.home_rounded, 'Главная'),
+    (Symbols.dns_rounded, Symbols.dns_rounded, 'Серверы'),
+    (Symbols.tune_rounded, Symbols.tune_rounded, 'Настройки'),
   ];
 
+  /// Material 3 navigation bar (pill indicator behind the icon); on a wallpaper it is see-through.
   @override
-  Widget build(BuildContext context) => SafeArea(
-    top: false,
-    child: Container(
-      margin: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: _surface,
-        image: panelImage,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: _line),
-      ),
-      child: Row(
-        children: [
-          for (var i = 0; i < _items.length; i++)
-            Expanded(
-              child: InkWell(
-                onTap: () => onTap(i),
-                borderRadius: BorderRadius.circular(18),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: i == index ? _purple.withValues(alpha: .18) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: i == index ? _purple.withValues(alpha: .6) : Colors.transparent),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(_items[i].$1, color: i == index ? _green : _muted),
-                      const SizedBox(height: 2),
-                      Text(_items[i].$2, style: TextStyle(fontSize: 12, color: i == index ? Colors.white : _muted)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(color: _surface, image: panelImage),
+    child: NavigationBar(
+      selectedIndex: index,
+      onDestinationSelected: onTap,
+      backgroundColor: Colors.transparent,
+      indicatorColor: _purple.withValues(alpha: .28),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      destinations: [
+        for (final i in _items)
+          NavigationDestination(
+            icon: Icon(i.$1, color: _muted),
+            selectedIcon: Icon(i.$2, color: _fg, fill: 1),
+            label: i.$3,
+          ),
+      ],
     ),
   );
 }
@@ -1157,7 +1423,7 @@ class _SubscriptionCard extends StatelessWidget {
     final exp = sub.expires;
     final left = exp?.difference(DateTime.now());
     final String line;
-    Color color = Colors.white;
+    Color color = _fg;
     if (sub.notice != null) {
       line = sub.notice!;
       color = _red;
@@ -1171,19 +1437,14 @@ class _SubscriptionCard extends StatelessWidget {
       if (left.inDays < 3) color = _purple;
     }
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _surface,
-        image: panelImage,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _line),
-      ),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(color: _surface, image: panelImage, borderRadius: BorderRadius.circular(24)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             line,
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: color),
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: color),
           ),
           if (left != null && !left.isNegative && sub.notice == null)
             Padding(
@@ -1199,20 +1460,21 @@ class _SubscriptionCard extends StatelessWidget {
                   style: FilledButton.styleFrom(
                     backgroundColor: _purple,
                     foregroundColor: palette.onAccent,
-                    minimumSize: const Size.fromHeight(44),
+                    minimumSize: const Size.fromHeight(48),
                   ),
-                  child: const Text('Продлить', style: TextStyle(fontWeight: FontWeight.w600)),
+                  child: const Text('Продлить', style: TextStyle(fontWeight: FontWeight.w800)),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: OutlinedButton(
+                child: FilledButton(
                   onPressed: onBot,
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: _line),
-                    minimumSize: const Size.fromHeight(44),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _high,
+                    foregroundColor: _fg,
+                    minimumSize: const Size.fromHeight(48),
                   ),
-                  child: const Text('Поддержка', style: TextStyle(color: Colors.white)),
+                  child: const Text('Поддержка', style: TextStyle(fontWeight: FontWeight.w700)),
                 ),
               ),
             ],
@@ -1240,16 +1502,20 @@ class _SubscriptionCard extends StatelessWidget {
 /// Connection settings (changes are saved and applied when the page closes).
 class SettingsPage extends StatefulWidget {
   final Settings settings;
+  final String subUrl; // «Предложить иконку» sends to the subscription's server
   final Update? update;
   final Future<Update?> Function() onCheckUpdate;
   final VoidCallback onInstall;
+  final VoidCallback? onEditHome; // Главный экран → «Режим редактирования»
   final bool embedded; // a tab of the home screen (no app bar, nothing to pop)
   const SettingsPage({
     super.key,
     required this.settings,
+    required this.subUrl,
     required this.update,
     required this.onCheckUpdate,
     required this.onInstall,
+    this.onEditHome,
     this.embedded = false,
   });
 
@@ -1263,6 +1529,303 @@ class _SettingsPageState extends State<SettingsPage> {
   bool checking = false;
   String? checked;
   final _taps = <DateTime>[]; // the secret: 7 taps on the version line within 3 s
+  bool sending = false; // an icon idea is on its way
+
+  Appearance get _a => appearance.value;
+
+  /// Appearance changes apply at once (they do not touch the core).
+  Future<void> _setA(void Function(Appearance a) change) async {
+    final a = _a.copy();
+    change(a);
+    await saveAppearance(a);
+    if (mounted) setState(() {});
+  }
+
+  void _say(String t) => ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(t)));
+
+  Widget _label(String t, [String? sub]) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(t, style: TextStyle(fontSize: 16, color: _fg)),
+      if (sub != null) Text(sub, style: TextStyle(color: _muted, fontSize: 12)),
+    ],
+  );
+
+  Widget _themeRow() => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _label('Тема'),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<String>(
+            showSelectedIcon: false,
+            segments: [for (final e in modes.entries) ButtonSegment(value: e.key, label: Text(e.value))],
+            selected: {_a.mode},
+            onSelectionChanged: (v) => _setA((a) => a.mode = v.first),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _colorsRow() {
+    final items = <(String, String, Color?)>[
+      for (final e in seeds.entries) (e.key, e.value.$1, e.value.$2),
+      if (hasSystemColors) ('system', 'Material You', null),
+      if (hasOwnWallpaper) ('wallpaper', 'Из обоев', null),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _label('Цвета'),
+          const SizedBox(height: 12),
+          Wrap(spacing: 6, runSpacing: 12, children: [for (final it in items) _colorDot(it)]),
+        ],
+      ),
+    );
+  }
+
+  /// A colour choice; the picked one morphs from a circle into a rounded square (M3 Expressive).
+  Widget _colorDot((String, String, Color?) it) {
+    final sel = _a.colors == it.$1;
+    final l = look.value;
+    return InkWell(
+      onTap: () => _setA((a) => a.colors = it.$1),
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        width: 70,
+        child: Column(
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOutBack,
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(sel ? 15 : 24),
+                color: it.$1 == 'netkings' ? null : it.$3,
+                gradient: it.$1 == 'netkings'
+                    ? const LinearGradient(colors: [Color(0xFF2EE59D), Color(0xFF9D6BFF)])
+                    : (it.$1 == 'system'
+                          ? const SweepGradient(
+                              colors: [
+                                Color(0xFFE5484D),
+                                Color(0xFFFFC53D),
+                                Color(0xFF3DBE5C),
+                                Color(0xFF4C7DFF),
+                                Color(0xFFE5484D),
+                              ],
+                            )
+                          : null),
+                image: it.$1 == 'wallpaper' && l != null ? DecorationImage(image: l.image, fit: BoxFit.cover) : null,
+              ),
+              child: sel ? const Icon(Symbols.check_rounded, color: Colors.white) : null,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              it.$2,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: sel ? _fg : _muted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _wallpaperRow() {
+    final l = look.value;
+    final own = hasOwnWallpaper;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: _high,
+                  borderRadius: BorderRadius.circular(16),
+                  image: l != null ? DecorationImage(image: l.image, fit: BoxFit.cover) : null,
+                ),
+                child: l == null ? Icon(Symbols.wallpaper_rounded, color: _muted) : null,
+              ),
+              const SizedBox(width: 14),
+              Expanded(child: _label('Обои', own ? 'Своя картинка' : (l != null ? 'Секретная тема 🤫' : 'Без обоев'))),
+              if (l != null)
+                IconButton(
+                  tooltip: 'Убрать обои',
+                  onPressed: () async {
+                    await clearWallpaper();
+                    if (mounted) setState(() {});
+                  },
+                  icon: Icon(Symbols.close_rounded, color: _muted),
+                ),
+              FilledButton.tonal(
+                onPressed: () async {
+                  final t = await pickWallpaper();
+                  if (!mounted) return;
+                  setState(() {});
+                  _say(t);
+                },
+                child: Text(l == null ? 'Выбрать' : 'Сменить'),
+              ),
+            ],
+          ),
+          if (own)
+            Row(
+              children: [
+                Icon(Symbols.brightness_6_rounded, size: 18, color: _muted),
+                Expanded(
+                  child: Slider(
+                    value: _a.wallDim,
+                    max: .85,
+                    // live preview while dragging; saved once at the end
+                    onChanged: (v) => appearance.value = _a.copy()..wallDim = v,
+                    onChangeEnd: (v) => _setA((a) => a.wallDim = v),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fontRows() => Column(
+    children: [
+      for (final e in fonts.entries)
+        ListTile(
+          onTap: () async {
+            // «Свой»: a file first (again when it is already on = another file)
+            if (e.key == 'custom' && (_a.fontFile == null || _a.font == 'custom')) {
+              final t = await pickFont();
+              if (mounted) _say(t);
+              return;
+            }
+            await _setA((a) => a.font = e.key);
+          },
+          title: Text(
+            e.value.$1,
+            style: switch (e.key) {
+              'flex' => const TextStyle(
+                fontFamily: 'GoogleSansFlex',
+                fontFamilyFallback: ['Nunito'],
+                fontVariations: [FontVariation('ROND', 100)],
+                fontWeight: FontWeight.w800,
+              ),
+              'flex_plain' => const TextStyle(
+                fontFamily: 'GoogleSansFlex',
+                fontVariations: [],
+                fontWeight: FontWeight.w500,
+              ),
+              _ => null,
+            },
+          ),
+          subtitle: Text(
+            e.key == 'custom' && _a.fontFile != null ? 'Свой файл · нажми ещё раз, чтобы сменить' : e.value.$2,
+            style: TextStyle(color: _muted, fontSize: 12),
+          ),
+          trailing: Icon(
+            _a.font == e.key ? Symbols.radio_button_checked_rounded : Symbols.radio_button_unchecked_rounded,
+            color: _a.font == e.key ? _green : _muted,
+          ),
+        ),
+    ],
+  );
+
+  Widget _buttonPicker() => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(padding: const EdgeInsets.only(left: 4), child: _label('Кнопка подключения')),
+        const SizedBox(height: 12),
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 1.3,
+          children: [
+            for (final e in buttons.entries)
+              InkWell(
+                onTap: () => _setA((a) => a.button = e.key),
+                borderRadius: BorderRadius.circular(24),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  padding: const EdgeInsets.fromLTRB(10, 14, 10, 8),
+                  decoration: BoxDecoration(
+                    color: _a.button == e.key ? Color.alphaBlend(_purple.withValues(alpha: .22), _bg) : _bg,
+                    borderRadius: BorderRadius.circular(_a.button == e.key ? 28 : 18),
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: IgnorePointer(
+                          child: FittedBox(child: PowerButton(style: e.key, on: false, busy: false)),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(e.value, style: TextStyle(fontSize: 13, color: _a.button == e.key ? _fg : _muted)),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _suggestIcon() async {
+    final p = await pickIdeaPicture();
+    if (p == null || !mounted) return;
+    if (p.startsWith('!')) return _say(p.substring(1));
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+        title: const Text('Отправить картинку?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Image.file(File(p), height: 160, fit: BoxFit.contain),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Она уйдёт команде NetKings. Если понравится — появится как иконка в одном из следующих обновлений.',
+              style: TextStyle(color: _muted, fontSize: 14),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Отправить')),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    setState(() => sending = true);
+    final t = await sendIdea(widget.subUrl, p);
+    if (!mounted) return;
+    setState(() => sending = false);
+    _say(t);
+  }
 
   void _versionTap() {
     final now = DateTime.now();
@@ -1330,30 +1893,65 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _section(String title) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
-    child: Text(title, style: TextStyle(color: _muted, fontSize: 12, letterSpacing: 1.2)),
-  );
-
-  Widget _card(List<Widget> children) => Container(
-    margin: const EdgeInsets.symmetric(horizontal: 16),
-    decoration: BoxDecoration(
-      color: _surface,
-      image: panelImage,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: _line),
-    ),
-    child: Column(children: children),
-  );
-
-  Widget _radio<T>(String title, T value, T group, ValueChanged<T> onChanged, {String? subtitle}) => ListTile(
-    onTap: () => setState(() => onChanged(value)),
-    title: Text(title),
-    subtitle: subtitle == null ? null : Text(subtitle, style: TextStyle(color: _muted, fontSize: 12)),
-    trailing: Icon(
-      value == group ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
-      color: value == group ? _green : _muted,
+    padding: const EdgeInsets.fromLTRB(24, 26, 24, 10),
+    child: Text(
+      title,
+      style: TextStyle(color: _purple, fontSize: 14, fontWeight: FontWeight.w800),
     ),
   );
+
+  /// Material 3 Expressive grouped list: rows are separate tonal tiles, big radius on the group's ends.
+  Widget _card(List<Widget> children) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < children.length; i++)
+          Container(
+            margin: EdgeInsets.only(top: i == 0 ? 0 : 3),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: _surface,
+              image: panelImage,
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(i == 0 ? 24 : 6),
+                bottom: Radius.circular(i == children.length - 1 ? 24 : 6),
+              ),
+            ),
+            child: Material(type: MaterialType.transparency, child: children[i]),
+          ),
+      ],
+    ),
+  );
+
+  Widget _radio<T>(String title, T value, T group, ValueChanged<T> onChanged, {String? subtitle, String? badge}) =>
+      ListTile(
+        onTap: () => setState(() => onChanged(value)),
+        title: badge == null
+            ? Text(title)
+            : Row(
+                children: [
+                  Text(title),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: _green.withValues(alpha: .18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      badge,
+                      style: TextStyle(color: _green, fontSize: 11, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ],
+              ),
+        subtitle: subtitle == null ? null : Text(subtitle, style: TextStyle(color: _muted, fontSize: 12)),
+        trailing: Icon(
+          value == group ? Symbols.radio_button_checked_rounded : Symbols.radio_button_unchecked_rounded,
+          color: value == group ? _green : _muted,
+        ),
+      );
 
   Widget _switch(String title, String subtitle, bool value, ValueChanged<bool> onChanged) => SwitchListTile(
     value: value,
@@ -1378,12 +1976,12 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: EdgeInsets.fromLTRB(20, 20, 20, 0),
             child: Text('Настройки', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
           ),
-        _section('ПРОТОКОЛ'),
+        _section('Протокол'),
         _card([
           for (final e in protocols.entries)
             _radio(e.value, e.key, s.protocol, (v) => s.protocol = v, subtitle: _protoHints[e.key]),
         ]),
-        _section('ПОДКЛЮЧЕНИЕ'),
+        _section('Подключение'),
         _card([
           _switch(
             'Автопереключение',
@@ -1411,13 +2009,60 @@ class _SettingsPageState extends State<SettingsPage> {
                 'Системные настройки Android: «Постоянная VPN» и «Блокировать соединения без VPN»',
                 style: TextStyle(color: _muted, fontSize: 12),
               ),
-              trailing: Icon(Icons.open_in_new_rounded, color: _muted, size: 20),
+              trailing: Icon(Symbols.open_in_new_rounded, color: _muted, size: 20),
             ),
         ]),
         _section('DNS'),
         _card([for (final e in dnsServers.entries) _radio(e.value.$1, e.key, s.dns, (v) => s.dns = v)]),
-        _section('ПРИЛОЖЕНИЕ'),
+        _section('Пинг'),
         _card([
+          for (final e in pingMethods.entries)
+            _radio(
+              e.value.$1,
+              e.key,
+              s.pingMethod,
+              (v) => s.pingMethod = v,
+              subtitle: e.value.$2,
+              badge: e.key == 'nk' ? 'наш' : null,
+            ),
+        ]),
+        _section('Оформление'),
+        _card([_themeRow(), _colorsRow(), _wallpaperRow(), _buttonPicker()]),
+        _section('Шрифт'),
+        _card([_fontRows()]),
+        _section('Главный экран'),
+        _card([
+          ListTile(
+            onTap: widget.onEditHome,
+            leading: Icon(Symbols.edit_rounded, color: _purple),
+            title: const Text('Режим редактирования'),
+            subtitle: Text(
+              'Переставляй и скрывай блоки прямо на главном экране',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+            trailing: Icon(Symbols.chevron_right_rounded, color: _muted),
+          ),
+        ]),
+        _section('Приложение'),
+        _card([
+          SwitchListTile(
+            value: _a.haptics,
+            onChanged: (v) => _setA((a) => a.haptics = v),
+            title: const Text('Вибрация'),
+            subtitle: Text('Лёгкий отклик при подключении', style: TextStyle(color: _muted, fontSize: 12)),
+          ),
+          ListTile(
+            onTap: sending ? null : _suggestIcon,
+            leading: Icon(Symbols.add_photo_alternate_rounded, color: _purple),
+            title: const Text('Предложить иконку'),
+            subtitle: Text(
+              'Пришли свою картинку — лучшие добавим в обновлении',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+            trailing: sending
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : null,
+          ),
           ListTile(
             // no ripple, no hint: the secret field opens after 7 quick taps
             title: GestureDetector(
@@ -1495,7 +2140,7 @@ class _WelcomeState extends State<_Welcome> {
     children: [
       ShaderMask(
         shaderCallback: (r) => _brand.createShader(r),
-        child: const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 64),
+        child: const Icon(Symbols.workspace_premium_rounded, color: Colors.white, size: 64),
       ),
       const SizedBox(height: 12),
       const Text(
@@ -1512,7 +2157,7 @@ class _WelcomeState extends State<_Welcome> {
       const SizedBox(height: 40),
       FilledButton.icon(
         onPressed: widget.onBot,
-        icon: const Icon(Icons.send_rounded),
+        icon: const Icon(Symbols.send_rounded),
         label: const Text('Получить доступ в боте', style: TextStyle(fontWeight: FontWeight.w600)),
         style: FilledButton.styleFrom(
           backgroundColor: _purple,
@@ -1554,7 +2199,7 @@ class _WelcomeState extends State<_Welcome> {
         ),
         child: widget.busy
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-            : const Text('Добавить', style: TextStyle(color: Colors.white)),
+            : Text('Добавить', style: TextStyle(color: _fg)),
       ),
       if (widget.message != null) ...[
         const SizedBox(height: 14),

@@ -68,6 +68,10 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                     result.success(true)
                 }
+                // Material You: the accent Android 12+ took from the phone's wallpaper (null before 12)
+                "systemAccent" -> result.success(
+                    if (Build.VERSION.SDK_INT >= 31) getColor(android.R.color.system_accent1_500) else null
+                )
                 else -> result.notImplemented()
             }
         }

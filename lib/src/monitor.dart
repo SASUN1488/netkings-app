@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'ping.dart';
 import 'singbox.dart';
 
 const _testUrl = 'https://www.gstatic.com/generate_204';
@@ -23,8 +25,12 @@ class Monitor extends ChangeNotifier {
   final Future<void> Function()? onHome; // [home] answers again
   final int port;
   final int proxyPort;
+  final String pingMethod; // Настройки → Пинг (src/ping.dart)
+  final (String, int)? Function(String leaf)? entryOf; // the entry server (host, port) of a server
   Monitor(
     this.secret, {
+    this.pingMethod = 'nk',
+    this.entryOf,
     this.autoSwitch = true,
     this.onSwitch,
     this.onDead,
@@ -36,6 +42,7 @@ class Monitor extends ChangeNotifier {
 
   int down = 0, up = 0; // bytes per second
   int? ping; // ms of the last answer; null = none yet
+  int? pingToServer; // NK Ping: the part of [ping] from here to the entry server
   int misses = 0; // rounds in a row without an answer; ping is stale while > 0
   String? leaf; // e.g. "fi-relay3-grpc"
   bool _running = false;
@@ -67,7 +74,7 @@ class Monitor extends ChangeNotifier {
     _tunnel?.close();
     _tunnel = null;
     down = up = 0;
-    ping = null;
+    ping = pingToServer = null;
     misses = 0;
     leaf = null;
     _fails = _deadRounds = _rounds = 0;
@@ -175,6 +182,43 @@ class Monitor extends ChangeNotifier {
     return null;
   }
 
+  /// The shown ping in the picked way; [alive] (the core's delay test) when that way gets no answer.
+  Future<void> _measure(String? via, int alive) async {
+    final e = via == null ? null : entryOf?.call(via);
+    PingResult? r;
+    switch (pingMethod) {
+      case 'tcp':
+        final t = e == null ? null : await tcpPingMedian(e.$1, e.$2);
+        if (t != null) r = PingResult(t);
+      case 'icmp':
+        final t = e == null ? null : await icmpPing(e.$1);
+        if (t != null) r = PingResult(t);
+      case 'head' || 'get':
+        final t = await freshHttpPing(proxyPort, 'nk', secret, get: pingMethod == 'get');
+        if (t != null) r = PingResult(t);
+      default:
+        // NK Ping: the whole way over a kept tunnel (median of 3: what the user feels) and, outside the tunnel,
+        // the way to the entry server (best of 3: its bare latency — a busy home link's spikes would otherwise
+        // land in either part at random); the rest is what the VPN adds (entry -> exit -> the site)
+        final total = await _rttMedian();
+        if (total != null) {
+          final to = e == null ? null : await tcpPingMedian(e.$1, e.$2, best: true);
+          r = PingResult(total, to == null ? null : min(to, total));
+        }
+    }
+    ping = r?.total ?? alive;
+    pingToServer = r?.toServer;
+  }
+
+  Future<int?> _rttMedian() async {
+    final v = <int>[];
+    for (var i = 0; i < 3; i++) {
+      final t = await _rtt();
+      if (t != null) v.add(t);
+    }
+    return v.isEmpty ? null : median(v);
+  }
+
   @visibleForTesting
   Duration retryDelay = const Duration(seconds: 1);
 
@@ -201,11 +245,45 @@ class Monitor extends ChangeNotifier {
     }
   }
 
-  /// Delay test through each of [tags] at once, for the server list: ms, or null = no answer.
-  /// Every test opens a new connection, so the numbers include the handshakes (bigger than the shown ping).
-  Future<Map<String, int?>> testServers(List<String> tags) async {
-    final r = await Future.wait(tags.map(_ping));
+  /// The server list: every server measured the way the shown ping is (NK Ping: a kept tunnel through that
+  /// server's own local proxy, median of 3; HEAD / GET: a fresh request through it), all at once.
+  /// [ports]: server -> its local proxy port; a server without one (or a failed proxy) gets the core's delay
+  /// test, which opens a new connection and so also counts the handshakes.
+  Future<Map<String, int?>> testServers(List<String> tags, [Map<String, int> ports = const {}]) async {
+    Future<int?> one(String tag) async {
+      final port = ports[tag];
+      if (port == null) return _ping(tag);
+      final int? r;
+      if (pingMethod == 'head' || pingMethod == 'get') {
+        r = await freshHttpPing(port, 'nk', secret, get: pingMethod == 'get');
+      } else {
+        r = await _warmRtt(port);
+      }
+      return r ?? await _ping(tag);
+    }
+
+    final r = await Future.wait(tags.map(one));
     return {for (var i = 0; i < tags.length; i++) tags[i]: r[i]};
+  }
+
+  /// A tunnel through [port], one request to open the way, then the median of 3 timed ones.
+  Future<int?> _warmRtt(int port) async {
+    _Tunnel? t;
+    try {
+      t = await _Tunnel.open(port, 'nk', secret);
+      await t.request();
+      final v = <int>[];
+      for (var i = 0; i < 3; i++) {
+        final sw = Stopwatch()..start();
+        await t.request();
+        v.add(sw.elapsedMilliseconds);
+      }
+      return median(v);
+    } catch (_) {
+      return null;
+    } finally {
+      t?.close();
+    }
   }
 
   /// One watchdog round (every 10 s while connected).
@@ -216,7 +294,7 @@ class Monitor extends ChangeNotifier {
       final (group, now) = await _current();
       final p = await _pingTwice(now);
       if (_http == null) return;
-      if (p != null) ping = await _rtt() ?? p;
+      if (p != null) await _measure(now, p);
       if (_http == null) return;
       misses = p == null ? misses + 1 : 0;
       leaf = now ?? leaf; // the core's own re-picks (a faster server) are not announced
@@ -236,7 +314,7 @@ class Monitor extends ChangeNotifier {
       final (_, n) = await _current();
       final again = await _ping(n);
       if (again != null) {
-        ping = await _rtt() ?? again;
+        await _measure(n, again);
         misses = 0;
         _deadRounds = 0;
         if (n != null && n != leaf) onSwitch?.call(n);

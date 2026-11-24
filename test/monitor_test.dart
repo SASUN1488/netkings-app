@@ -146,6 +146,28 @@ void main() {
     await core.server.close(force: true);
   });
 
+  test('TCP ping method: the shown ping is the way to the entry server, NK without a tunnel falls back', () async {
+    final core = FakeCore();
+    await core.start();
+    final entry = await ServerSocket.bind('127.0.0.1', 0);
+    entry.listen((c) => c.destroy());
+    final tcp = Monitor('s', port: core.server.port, pingMethod: 'tcp', entryOf: (_) => ('127.0.0.1', entry.port))
+      ..attach();
+    await tcp.tick();
+    expect(tcp.ping, isNotNull);
+    expect(tcp.ping, lessThan(120)); // not the fake core's delay-test number
+    expect(tcp.pingToServer, isNull);
+    // NK Ping with no proxy to keep a tunnel through: the delay test's number, no parts
+    final nk = Monitor('s', port: core.server.port, proxyPort: 1, entryOf: (_) => ('127.0.0.1', entry.port))..attach();
+    await nk.tick();
+    expect(nk.ping, 120);
+    expect(nk.pingToServer, isNull);
+    tcp.dispose();
+    nk.dispose();
+    await entry.close();
+    await core.server.close(force: true);
+  });
+
   test('speed format', () {
     expect(formatSpeed(0), '0 бит/с');
     expect(formatSpeed(125000), '1.0 Мбит/с');

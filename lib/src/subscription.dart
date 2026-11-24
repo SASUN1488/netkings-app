@@ -5,7 +5,7 @@ import 'dart:math';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
-const appVersion = '0.2.6';
+const appVersion = '0.3.0';
 
 /// One country the user can pick: a urltest group over all entries x protocols of that exit.
 class Country {
@@ -27,9 +27,9 @@ class Subscription {
       raw['expires'] == null ? null : DateTime.fromMillisecondsSinceEpoch((raw['expires'] as int) * 1000);
   List<dynamic> get outbounds => raw['outbounds'] as List<dynamic>? ?? [];
   List<Country> get countries => [
-        for (final c in raw['countries'] as List<dynamic>? ?? [])
-          Country(c['id'], c['tag'], c['flag'] ?? '', c['name'] ?? c['id']),
-      ];
+    for (final c in raw['countries'] as List<dynamic>? ?? [])
+      Country(c['id'], c['tag'], c['flag'] ?? '', c['name'] ?? c['id']),
+  ];
 }
 
 /// Subscription URL / cached body / device id kept in the app's private files.

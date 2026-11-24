@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.2.6+8
+version: 0.3.0+9
 
 environment:
   sdk: ^3.13.7
@@ -38,6 +38,7 @@ dependencies:
   path_provider: ^2.1.6
   crypto: ^3.0.8
   file_picker: ^13.3.2
+  material_symbols_icons: ^4.2960.0
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +68,17 @@ flutter:
     - assets/eggs/joker.jpg
     - assets/eggs/dog.jpg
     - assets/eggs/tom.jpg
+    - assets/fonts/GoogleSansFlex-OFL.txt
+    - assets/fonts/Nunito-OFL.txt
+
+  fonts:
+    - family: GoogleSansFlex
+      fonts:
+        - asset: assets/fonts/GoogleSansFlex.ttf
+    # Google Sans Flex has no Cyrillic: Russian text comes from Nunito (also bold + round)
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

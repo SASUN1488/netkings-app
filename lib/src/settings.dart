@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'ping.dart';
 import 'subscription.dart';
 
 /// Protocols the app subscription can carry (the profile label is the last part of an outbound tag,
@@ -20,6 +21,7 @@ class Settings {
   bool directRu = true; // .ru / .рф and Russian IPs bypass the VPN
   bool autoSwitch = true; // the watchdog moves to another protocol / server when the current one dies
   bool autoConnect = false; // connect as soon as the app starts
+  String pingMethod = 'nk'; // src/ping.dart
 
   Map<String, dynamic> toJson() => {
     'protocol': protocol,
@@ -27,6 +29,7 @@ class Settings {
     'directRu': directRu,
     'autoSwitch': autoSwitch,
     'autoConnect': autoConnect,
+    'pingMethod': pingMethod,
   };
 
   static Settings fromJson(Map<String, dynamic> j) => Settings()
@@ -34,7 +37,8 @@ class Settings {
     ..dns = dnsServers.containsKey(j['dns']) ? j['dns'] as String : 'cloudflare'
     ..directRu = j['directRu'] as bool? ?? true
     ..autoSwitch = j['autoSwitch'] as bool? ?? true
-    ..autoConnect = j['autoConnect'] as bool? ?? false;
+    ..autoConnect = j['autoConnect'] as bool? ?? false
+    ..pingMethod = pingMethods.containsKey(j['pingMethod']) ? j['pingMethod'] as String : 'nk';
 
   static Future<Settings> load() async {
     try {
